@@ -1,4 +1,4 @@
-# Pi Subagent for LocalLLMs
+# Pi SubAgent for LocalLLMs
 
 Forked from https://github.com/mjakl/pi-subagent, shoutout for a clean, concise baseline to use.
 
