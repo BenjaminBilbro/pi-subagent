@@ -4,7 +4,7 @@ Simple guidance for coding agents working in this repository.
 
 ## Repository setup
 
-- Requirements: Node.js + npm
+- Requirements: Node.js 22.19+ and npm
 - Install dependencies:
 
 ```bash
@@ -30,8 +30,10 @@ pi -e .
 ## Code map
 
 - `index.ts` — extension entry point and tool registration
-- `agents.ts` — agent discovery/parsing
+- `bash-guardian.js` — live POSIX process-group owner for child Bash commands
+- `protocol.ts` — frame/task/receipt protocol, ledger, and process registry
 - `runner.ts` — subagent process execution
+- `runner-events.js` — bounded Pi JSON event parsing
 - `render.ts` — TUI rendering for tool calls/results
 - `types.ts` — shared types/helpers
 - `README.md` — user-facing docs
@@ -54,5 +56,6 @@ Keep commits focused (one logical change per commit).
 
 ## Release notes
 
-- Package name: `@mjakl/pi-subagent`
+- Package name is still inherited as `@mjakl/pi-subagent`; do not publish from this fork unless the maintainer confirms access to that npm scope or deliberately renames it.
+- Minimum Pi API: `@earendil-works/*` 0.80.6
 - For doc/code changes on npm, publish a new version (`npm version patch|minor|major`), then publish.

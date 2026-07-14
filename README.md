@@ -1,49 +1,35 @@
-# Pi Subagent for LocalLLMs
+# Pi Subagent for Local LLMs
 
-Forked from https://github.com/mjakl/pi-subagent, shoutout for a clean, concise baseline to use.
+Serial, disposable subagents for Pi that preserve the parent transcript prefix.
 
-**Delegate tasks to isolated sub-agents with full context inheritance.**
+This extension is aimed at a single locally hosted model where parallel inference or multiple independent KV caches would be too expensive. It lets a main agent delegate to a compact manager, and lets that manager delegate focused workers one at a time:
 
-Sub-agents run in separate `pi` processes and inherit your complete conversation history and system prompt. This preserves KV cache efficiency while offloading heavy work.
+```text
+main
+  └─ manager
+       ├─ worker: scout
+       ├─ worker: implementation slice 1
+       ├─ worker: implementation slice 2
+       └─ worker: integration verification
+```
 
-This repo is meant for those of us who cannot run llama.cpp with multiple KV cache slots. If you want a robust, cloud LLM ready sub-agent plugin, see the forked repo.
+Every child receives a JSONL snapshot of Pi's current session and its task is appended as a normal Pi user prompt. Pi continues to own the exact system prompt, messages, tool-call encoding, and provider request format. No llama.cpp patch is required.
 
-## Motivation Behind Local Sub-Agents
+## What this optimizes
 
-At home I almost always run LLMs locally via llama.cpp, and I am VRAM poor. I've used codex/claude/opencode with cloud models any they are great, but thats for my real job. Local LLMs are for fun and experimentation.
+A worker inherits the main and manager prefixes, does context-heavy work, and returns one bounded receipt. Its intermediate tool calls and messages do not enter the manager's continuing context. After the child exits, the next parent request has the same earlier prefix and llama.cpp can restore or reuse the matching cached state.
 
-I have a single 3080 with 10gb VRAM, 48gb DDR4 RAM, and Ryzen 9 3900X CPU. I am constantly trying to squeeze the most out of my local LLMs as possible. Every single sub-agent extension/plugin for pi that I could find did not take into account how careful you must be with context preservation as you move into the world of sub-agents. Its fine if you have to back-track in the KV cache, but you can never modify the conversation history without forcing a full prompt reprocessing.
+This extension preserves the conditions for prefix reuse; llama.cpp ultimately decides whether a request is restored from cache or reprocessed. Before a child model call, the extension compares hashes of the inherited message context, assembled system prompt, ordered active tool schemas, model, and thinking level. A known prefix mismatch fails closed instead of silently doing different work. A server-side cache miss can still reprocess an otherwise identical prefix.
 
-LLMs are inherently stateless and will slowly build up a collection of unique KV tokens throughout a conversation. 
-If the input/output chain looks like: i1 -> o1 -> i2 -> o2 -> i3 -> o3 then for i4, we MUST recreate the entire state starting from i1. If you just pass in i4 by itself, the entire tokenization/vectors change
-Thankfully, llama.cpp is smart, since the newest prompt depends on all of the previous ones, llama.cpp will simply use the latest state from o3 to perform 1 forward pass for i4, meaning no prompt reprocessing
+The deepest live task still has to fit the model's context window. Nesting prevents completed sibling histories from accumulating; it does not make ancestor context disappear.
 
-Issue with the existing sub-agent repo this is forked from (and most others):
+## Requirements
 
-| Scenario | What Happens | Cache Impact |
-|----------|-------------|--------------|
-| **System prompt modification** | The sub-agent plugin changes the system prompt to inject instructions | The very first prompt token (`i1`) changes → entire conversation chain must be recomputed |
-| **System prompt mutation after return** | Sub-agent inherits context (stable), finishes quickly, but the plugin updates the main agent's system prompt to indicate sub-agent completion | `i1` changes → full recomputation when the main agent resumes |
-| **Spawn mode (no context)** | Sub-agent receives no conversation history, only a task | No prefix match possible → full recompute |
+- Node.js 22.19 or newer
+- Pi `@earendil-works/*` packages 0.80.6 or newer
+- One shared working directory for the parent and all children
 
-All three scenarios force llama.cpp to discard the cached KV state and reprocess the entire conversation from scratch. On my hardware (e.g., an RTX 3080 with 10GB VRAM), this means every sub-agent spawn can trigger a full prompt reprocessing, the exact opposite of what you want when delegating work. Especially at 200-300 token/s prompt processing speed for a large conversation. 
-
-**The solution:** sub-agents must inherit the **exact same system prompt and conversation history** as the main agent. No system prompt modifications, no context stripping. The sub-agent's task is delivered as a user message appended after the full history. This way:
-
-- `i1` (the system prompt) never changes → prefix match is preserved
-- The main agent's KV cache stays valid before, during, and after the sub-agent run
-- llama.cpp finds the prefix match at the tool call position and only forward-passes the tool result
-- The sub-agent itself only computes the *new* tokens (task message + output), which is minimal
-
-The result: sub-agents offload heavy work without paying the penalty of full context recomputation. You get the performance benefits of delegation without the VRAM thrashing.
-
-## Why Pi Subagent
-
-**KV Cache Preservation** — Sub-agents inherit the full session context via a JSONL snapshot. The system prompt is never modified at runtime, so llama.cpp can reuse the existing KV cache.
-
-**Context Efficiency** — Sub-agents do all the heavy lifting (reading files, running commands, synthesizing information). You receive only the final result, keeping your context window lean.
-
-**Recursive Prevention** — Sub-agents cannot spawn further sub-agents. This is enforced at the runner level (code, not just a system prompt instruction).
+This branch uses Pi's current package namespace and extension API. It is a breaking compatibility change from older `@mariozechner/*` Pi installations.
 
 ## Install
 
@@ -51,164 +37,211 @@ The result: sub-agents offload heavy work without paying the penalty of full con
 pi install git:github.com/BenjaminBilbro/pi-subagent
 ```
 
-### Option 2: Manual Installation
-
-Clone this repository to your Pi extensions directory:
+For local development:
 
 ```bash
-cd ~/.pi/agent/extensions
 git clone https://github.com/BenjaminBilbro/pi-subagent.git
 cd pi-subagent
 npm install
+npm test
+npm run check
+pi -e .
 ```
 
-## Usage
+## The three tools
 
-### The `subagent` Tool
+All three protocol tools are registered at extension load time at every depth, in the same order, with static schemas. Role differences are enforced at execution time so terminal workers do not receive a different provider prefix. On POSIX, a child-only replacement for Pi's built-in Bash execution backend is installed later during `session_start`, after Pi binds runtime actions; its provider-visible definition and active-tool position remain identical.
+
+### `subagent`
+
+Creates exactly one serial child process. The default depth is:
+
+| Depth | Role | Can delegate? |
+|---:|---|---|
+| 0 | main | yes |
+| 1 | manager | yes |
+| 2 | worker | no |
+
+Example manager task:
 
 ```typescript
 subagent({
-  name: "researcher",     // Freeform name (human-like, for your reference)
-  task: "Research the latest about quantum computing",
-  timeout: 180,           // Optional: max seconds (default: 120)
-  maxTurns: 80,           // Optional: max LLM turns (default: 50)
-  cwd: "/path/to/dir"     // Optional: working directory
+  name: "auth-manager",
+  taskId: "auth-refactor",
+  task: "Refactor the authentication API without changing its public behavior.",
+  scope: ["src/auth", "test/auth"],
+  nonGoals: ["Do not change session storage."],
+  acceptance: [
+    "Existing authentication tests pass.",
+    "New refresh-token behavior has regression coverage."
+  ],
+  verification: ["npm test -- test/auth"],
+  timeout: 600,
+  maxTurns: 50
 })
 ```
 
-There is no option to specify a model to use as the sub-agent. It will always be the current model used by the active pi session. I can't run more than 1 LLM anyways :) 
-You can fork this repo and add in model selection as a parameter.
+The manager can then call the same tool to create workers. Managers should stay small: use a disposable scout for broad repository exploration, then retain only its compact receipt.
 
-### Parameters
+Important behavior:
 
-| Parameter | Required | Default | Description |
-|-----------|----------|---------|-------------|
-| `name` | Yes | — | Freeform human-like name (e.g., "researcher", "analyst"). Used for display only. |
-| `task` | Yes | — | Task description. The sub-agent receives the full session context. |
-| `timeout` | No | 600 | Maximum execution time in seconds. |
-| `maxTurns` | No | 50 | Maximum number of LLM turns the sub-agent can make. |
-| `cwd` | No | Parent cwd | Working directory for the sub-agent process. | 
+- Execution is sequential. The extension rejects another direct child while one is active.
+- `subagent` must be the only tool call in its assistant message. Failure to verify that invariant rejects delegation.
+- Reusing a name or explicit task ID already in the active ancestry is rejected by default.
+- A different `cwd` is rejected. Pi includes working-directory data in its prompt construction, so changing it can invalidate prefix reuse.
+- Child deadlines are absolute and cannot exceed the parent's remaining deadline.
+- `timeout` defaults to 600 seconds and accepts 1–3600. `maxTurns` defaults to 50 and accepts 1–200.
+- The focused task contract is byte-bounded for direct argument transport. Keep task text concise—especially on Windows—and write large reference material to files, then pass paths in `scope`.
 
-TODO: The cwd will break the KV cache because pi itself injects the current working dir into the system prompt. Advise telling your LLM to leave that param unset.
+### `agent_status`
 
-### How It Works
+Returns authoritative host-owned identity and budget state:
 
-**What Gets Sent to Sub-Agents:**
-
+```json
+{
+  "kind": "pi-subagent-status",
+  "role": "worker",
+  "name": "auth-tests",
+  "taskId": "auth-step-3",
+  "depth": 2,
+  "maxDepth": 2,
+  "mayDelegate": false,
+  "remainingMs": 172000,
+  "maxTurns": 12
+}
 ```
-[Forked snapshot of current session context — identical to parent]
-[Same system prompt as the main agent]
 
-User: [sub-agent-task] Complete this task:
-{task description}
-```
+Every child is instructed to call this first. It solves role confusion without mutating the system prompt: the tool schema is constant and only its result is dynamic.
 
-**What Comes Back to the Main Agent:**
+### `submit_result`
 
-| Data | Main Agent Sees | TUI Shows |
-|------|-----------------|-----------|
-| Final text output | ✅ Yes | ✅ Yes |
-| Tool calls made by sub-agent | ❌ No | ✅ Yes (expanded view) |
-| Token usage / cost | ❌ No | ✅ Yes |
-| Error messages | ✅ Yes (on failure) | ✅ Yes |
+Managers and workers finish with one structured receipt:
 
-**Key point:** The main agent receives **only the final assistant text** from each sub-agent. Not the tool calls, not the reasoning, not the intermediate steps. This prevents context pollution while still giving you the results.
-
-## System Prompt Requirements
-
-This extension auto-injects sub-agent instructions into the system prompt at runtime. The injected text is **constant** (never changes), so KV cache stability is preserved.
-
-If you want to understand what gets injected, the extension adds these instructions:
-
-```markdown
-## Sub-Agent Tools/Extension
-
-Since we are running all our LLMs locally, we have to use a modified version of sub-agents. This means that you may switch between main agent and sub agent mode at any point during the session. 
-
-You will know sub-agent mode is active when you see a user message that follows this format:
-
-\`\`\`
-**[BEGIN SUB AGENT MODE]**: <prompt and task will go here>
-\`\`\`
-
-Once you see that then you will be operating in sub-agent mode, where you have an assigned task and should work to complete it. You will not be able to spawn any sub agents while operating in sub agent mode.
-Your primary goal is to accomplish the task and report back to the main agent.
-
-Another way to tell if you are in sub-agent mode is to look at the most recent tool call. You will see the sub-agent tool call followed by an empty tool result "No result provided". You ARE the tool result actively running in sub-agent mode.
-This means your final response will be the tool_result.
-
-### When to Use a Sub-Agent
-
-Use sub-agents when you need to:
-- Do heavy research across many files without polluting your context
-- Run long-running tasks that would consume your context window
-- Offload specialized work while you continue other tasks
-- Preserve context efficiency by keeping only summaries in your context
-
-A sub-agent will have FULL context for all tool calls/results and message history up until the point you spawn it, meaning it will know exactly what you know. Keep this in mind while defining a full task statement.
-
-### Calling the Subagent Tool
-
-\`\`\`
-subagent({
-  name: "researcher",     // Freeform name (human-like, for your reference)
-  task: "Research the latest about quantum computing",
-  timeout: 180,           // Optional: max seconds (default: 600)
-  maxTurns: 80,           // Optional: max LLM turns (default: 50)
-  cwd: "/path/to/dir"     // Optional: working directory
+```typescript
+submit_result({
+  status: "completed",
+  summary: "Refactored token parsing and added expiry coverage.",
+  changedFiles: ["src/auth/token.ts", "test/auth/token.test.ts"],
+  checks: [{
+    id: "auth-tests",
+    status: "passed",
+    command: "npm test -- test/auth",
+    exitCode: 0,
+    evidence: "42 tests passed"
+  }],
+  artifacts: [],
+  unresolved: []
 })
-\`\`\`
-
-
-### Best Practices
-
-1. Give sub-agents clear, specific task descriptions
-2. Set appropriate timeouts for long-running tasks
-3. Let sub-agents write results to files — you can read them back
-4. Use sub-agents to consolidate knowledge into summaries before bringing it back into your context
 ```
 
-## Features
+Valid result statuses are `completed`, `partial`, `blocked`, and `failed`. Only a consistent `completed` receipt followed by Pi's `agent_settled` event and a clean process exit is successful. A completed receipt cannot contain failed checks or unresolved issues.
 
-- **Full Context Inheritance** — Sub-agents receive the complete session context via JSONL snapshot.
-- **Auto-Injection** — Sub-agent instructions are injected into the system prompt at startup (constant text, KV cache stable).
-- **Recursion Guard** — Sub-agents cannot spawn further sub-agents. Enforced at the runner level by blocking `subagent` tool calls.
-- **Timeout & Max Turns** — Configurable safeguards against runaway sub-agents (default: 120s timeout, 50 max turns).
-- **Streaming Updates** — Watch sub-agent progress in real-time as tool calls and outputs stream in.
-- **Rich TUI Rendering** — Collapsed/expanded views with usage stats and tool call previews.
+Receipt checks are explicitly recorded as `agent-reported`. A later worker or manager should rerun important checks rather than trusting prose alone. Full logs and large artifacts should be written to files; only bounded evidence belongs in the receipt.
 
-## Example of it working
+On current Pi, `submit_result` uses `terminate: true` to avoid an extra model turn. The parent requires Pi's successful, tool-call-correlated `submit_result` event and cross-checks it against an exclusive recovery file (mode 0600 on POSIX); a child-created file alone is not authoritative. The parent never depends on parsing free-form assistant text.
 
-Ask the main agent to spawn a sub-agent:
+## Context lifecycle
 
-![Sub-Agent Example](static/sub-agent-example.png)
+For a manager with two workers, the provider sees this serial shape:
 
-The sub-agent recognizes its in sub-agent mode and begins its assigned task:
-
-![Sub-Agent Example 2](static/sub-agent-example-2.png)
-
-This is right when the sub-agent finished. From the llama.cpp logs it reverted all the way back from the kv slot with 43k tokens to the kv slot state it was before the sub-agent invocation:
-
-![Agent Handoff Example](static/agent-handoff-example.png)
-
-You can see all the files that the sub-agent read, and the final message returned to the main agent. The sub-agent grew the kv cache all the way to 44k tokens, but after llama.cpp restored, the main agent remains at 6k tokens and responded immediately. It only had to process the sub-agent message.
-
-![Final Result Example](static/final-result-example.png)
-
-The main agent receives only the final result from the sub-agent, keeping its context window focused on the work product.
-
+```text
+main prefix
+  + manager task and work
+    + worker 1 task and work
+  ← worker 1 discarded; compact receipt appended to manager
+    + worker 2 task and work
+  ← worker 2 discarded; compact receipt appended to manager
+← manager discarded; compact manager receipt appended to main
 ```
-index.ts       — Extension entry point: tool registration, auto-injection, execution
-runner.ts      — Process runner: starts `pi` subprocesses with full context inheritance
-runner-cli.js  — Parent CLI inheritance: parses and normalizes flags forwarded to child processes
-runner-events.js — Event parser: processes Pi JSON mode events, enforces maxTurns and recursion guard
-render.ts      — TUI rendering: renderCall and renderResult for the subagent tool
-types.ts       — Shared types and pure helper functions
+
+The extension does not manually construct provider messages. It serializes `sessionManager.getHeader()` plus `sessionManager.getBranch()`, starts another Pi process with that session, and asks Pi to append the task envelope.
+
+To maximize a llama.cpp cache hit, keep these stable:
+
+- working directory and prompt resource discovery
+- Pi version and extension set/order
+- active tool set
+- model/provider and thinking level
+- system-prompt files such as `AGENTS.md`
+
+The extension forwards Pi's current model, thinking level, and exact active-tool order to each child. It uses Pi's own current CLI parser to inherit prompt/resource/trust settings while suppressing conflicting session and tool selectors. Editing prompt resources during a run causes the cache-prefix fingerprint to reject the child before its first provider call.
+
+Pi auto-compaction is cancelled inside disposable child frames because pre-prompt compaction would replace the inherited prefix. If a manager is near its context limit, compact it before delegation rather than relying on a child to compact the fork.
+
+## Safety and failure handling
+
+KV/context rollback does not undo filesystem edits, shell commands, network requests, or spawned processes. Those are shared persistent state.
+
+The host therefore provides:
+
+- execute-time depth, cycle, and active-child guards
+- absolute hierarchical deadlines
+- real max-turn enforcement before the next provider call
+- Unix TERM → KILL escalation, with Windows `taskkill /T /F` for the direct child tree
+- a trusted depth-1 Unix process group containing the nested Pi stack, plus OS-anchored descendant cleanup for inner timeouts
+- a live POSIX guardian for every built-in Bash invocation, pinning its process-group identity until deterministic cleanup
+- an audit-only process registry that can trigger safe cleanup but can never add arbitrary PIDs to the signal set
+- bounded JSON events, stderr, captured messages, model-facing fallbacks, tasks, and receipts
+- cache-prefix fingerprints, successful-tool-event receipt correlation, and strict settlement/exit checks
+- unexpected-signal, forged-recovery-file, and malformed-receipt failures
+
+Each root delegation run creates a JSONL ledger in the operating system's temporary directory (mode 0600 on POSIX). `agent_status` and parent receipts expose its path. The ledger contains receipts and invocation metadata; a sibling `processes.jsonl` contains process audit records. Neither contains full model transcripts.
+
+In a disposable POSIX child, each ordinary built-in Bash command runs in a guardian-owned group. The live guardian is the group leader, remains alive after the command shell returns, and treats loss of its private parent pipe as a cleanup request. It sends TERM, keeps the group identity reserved during the grace period, then sends KILL to the entire group including itself. A missing, mismatched, or unexpectedly exited guardian fails the child closed before another provider turn.
+
+Custom tools—or bash commands that explicitly call `setsid`/daemonize again—must provide their own cleanup. Such processes leave the guardian's group; currently anchored descendants from other tools still receive best-effort cleanup. Preventing deliberate re-daemonization requires stronger operating-system isolation such as cgroups or job objects.
+
+## Configuration
+
+Root-process environment variables:
+
+| Variable | Default | Description |
+|---|---:|---|
+| `PI_SUBAGENT_MAX_DEPTH` | `2` | Maximum delegation depth, from 0 through 8. |
+| `PI_SUBAGENT_PREVENT_CYCLES` | `1` | Set to `0` to disable active-path name/task-ID cycle checks. |
+
+Other `PI_SUBAGENT_*` variables are internal host protocol state and should not be set manually.
+
+## Recommended workflow
+
+For a larger change:
+
+1. Main delegates one focused subsystem to a manager.
+2. Manager delegates a scout that returns a code map and proposed slices.
+3. Each implementation worker first verifies any prerequisite receipt, performs one slice, runs its checks, and submits a receipt.
+4. A disposable integration worker checks the combined state.
+5. Manager submits one bounded subsystem receipt.
+6. Main continues with only the manager receipt in its growing context.
+
+Size batches by receipt/context budget, not by a fixed number of tasks.
+
+## Development
+
+```bash
+npm test       # unit and subprocess integration tests
+npm run check  # strict TypeScript check against current Pi APIs
+```
+
+The tests cover valid and forged receipts, strict settlement and exit rules, current Pi CLI inheritance, task/receipt bounds, cache-prefix failures, max-turn termination, crash cleanup, nested timeout cleanup, Pi's real extension-load/session-start order, provider-identical Bash replacement, and guardian cleanup after completion, timeout, abort, concurrency, and child `SIGKILL`.
+
+See [docs/protocol.md](docs/protocol.md) for the frame, task, receipt, and process-lifecycle protocol.
+
+## Files
+
+```text
+index.ts          Extension hooks and the three static tools
+bash-guardian.js  Live POSIX process-group owner for child Bash commands
+protocol.ts       Frames, task envelopes, receipts, ledger, process registry
+runner.ts         Pi subprocess lifecycle and bounded event transport
+runner-cli.js     Stable parent CLI/resource inheritance
+runner-events.js  Pi JSON event parsing and bounded message capture
+render.ts         TUI rendering
+types.ts          Result state and semantic normalization
 ```
 
 ## Attribution
 
-Inspired by implementations from https://github.com/mjakl/pi-subagent
+Originally forked from [mjakl/pi-subagent](https://github.com/mjakl/pi-subagent).
 
 ## License
 
