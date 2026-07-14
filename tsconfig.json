@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "skipLibCheck": true
+  },
+  "include": [
+    "index.ts",
+    "protocol.ts",
+    "render.ts",
+    "runner.ts",
+    "types.ts",
+    "runner-cli.js",
+    "runner-events.js"
+  ]
+}

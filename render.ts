@@ -5,8 +5,8 @@
  */
 
 import * as os from "node:os";
-import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
-import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
+import { getMarkdownTheme, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
+import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { getResultSummaryText } from "./runner-events.js";
 import {
 	type DisplayItem,
@@ -54,7 +54,8 @@ function shortenPath(p: string): string {
 	return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
 }
 
-type ThemeFg = (color: string, text: string) => string;
+type ThemeFg = (color: ThemeColor, text: string) => string;
+type RenderTheme = Pick<Theme, "fg" | "bold">;
 
 function formatToolCall(toolName: string, args: Record<string, unknown>, fg: ThemeFg): string {
 	const pathArg = (args.file_path || args.path || args.name || "...") as string;
@@ -115,7 +116,7 @@ function countDisplayLines(items: DisplayItem[]): number {
 function renderDisplayItems(
 	items: DisplayItem[],
 	expanded: boolean,
-	theme: { fg: ThemeFg },
+	theme: Pick<Theme, "fg">,
 	limit?: number,
 ): string {
 	const lines: string[] = [];
@@ -139,10 +140,10 @@ function renderDisplayItems(
 	return text.trimEnd();
 }
 
-function statusIcon(r: SingleResult, theme: { fg: ThemeFg }): string {
+function statusIcon(r: SingleResult, theme: Pick<Theme, "fg">): string {
 	if (r.exitCode === -1) return theme.fg("warning", "⏳");
 	if (r.timeout) return theme.fg("error", "⏰");
-	if (r.maxTurns) return theme.fg("error", "🔄");
+	if (r.maxTurnsExceeded) return theme.fg("error", "🔄");
 	return isResultError(r) ? theme.fg("error", "✗") : theme.fg("success", "✓");
 }
 
@@ -150,7 +151,7 @@ function statusIcon(r: SingleResult, theme: { fg: ThemeFg }): string {
 // renderCall — shown while the tool is being invoked
 // ---------------------------------------------------------------------------
 
-export function renderCall(args: Record<string, any>, theme: { fg: ThemeFg; bold: (s: string) => string }): Text {
+export function renderCall(args: Record<string, any>, theme: RenderTheme): Text {
 	const agentName = args.name || args.agent || "...";
 	const preview = args.task ? truncate(args.task, 60) : "...";
 	let text =
@@ -167,7 +168,7 @@ export function renderCall(args: Record<string, any>, theme: { fg: ThemeFg; bold
 export function renderResult(
 	result: { content: Array<{ type: string; text?: string }>; details?: unknown },
 	expanded: boolean,
-	theme: { fg: ThemeFg; bold: (s: string) => string },
+	theme: RenderTheme,
 ): Container | Text {
 	const details = result.details as SubagentDetails | undefined;
 	if (!details || details.results.length === 0) {
@@ -186,7 +187,7 @@ export function renderResult(
 function renderSingleResult(
 	r: SingleResult,
 	expanded: boolean,
-	theme: { fg: ThemeFg; bold: (s: string) => string },
+	theme: RenderTheme,
 ): Container | Text {
 	const error = isResultError(r);
 	const icon = statusIcon(r, theme);
@@ -205,7 +206,7 @@ function renderSingleExpanded(
 	error: boolean,
 	displayItems: DisplayItem[],
 	finalOutput: string,
-	theme: { fg: ThemeFg; bold: (s: string) => string },
+	theme: RenderTheme,
 ): Container {
 	const mdTheme = getMarkdownTheme();
 	const container = new Container();
@@ -256,7 +257,7 @@ function renderSingleCollapsed(
 	icon: string,
 	error: boolean,
 	displayItems: DisplayItem[],
-	theme: { fg: ThemeFg; bold: (s: string) => string },
+	theme: RenderTheme,
 ): Text {
 	let text = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}`;
 	if (error && r.stopReason) text += ` ${theme.fg("error", `[${r.stopReason}]`)}`;

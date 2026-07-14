@@ -111,8 +111,7 @@ test("stderr remains a fallback only for error results", () => {
   assert.equal(getResultSummaryText(failedResult), "warning on stderr");
 });
 
-test("maxTurns enforcement stops processing when limit is reached", () => {
-  // Use unique messages to avoid deduplication
+test("terminal lifecycle events are still processed at the configured turn limit", () => {
   const makeMsg = (i) => ({
     role: "assistant",
     content: [{ type: "text", text: `Turn message ${i}` }],
@@ -129,7 +128,7 @@ test("maxTurns enforcement stops processing when limit is reached", () => {
   });
 
   const result = makeResult();
-  result.maxTurns = 3;
+  result.maxTurnsLimit = 3;
 
   // Process 3 messages (reaching the limit)
   processPiEvent({ type: "message_end", message: makeMsg(1) }, result);
@@ -139,10 +138,11 @@ test("maxTurns enforcement stops processing when limit is reached", () => {
   assert.equal(result.messages.length, 3);
   assert.equal(result.usage.turns, 3);
 
-  // 4th message should be blocked by maxTurns
-  const blocked = processPiEvent({ type: "message_end", message: makeMsg(4) }, result);
-  assert.equal(blocked, false);
+  processPiEvent({ type: "agent_end", messages: [makeMsg(3)] }, result);
+  processPiEvent({ type: "agent_settled" }, result);
+
   assert.equal(result.messages.length, 3);
-  assert.equal(result.stopReason, "max_turns");
-  assert.equal(result.errorMessage, "Sub-agent exceeded maximum turns (3)");
+  assert.equal(result.sawAgentEnd, true);
+  assert.equal(result.sawAgentSettled, true);
+  assert.equal(result.stopReason, undefined);
 });

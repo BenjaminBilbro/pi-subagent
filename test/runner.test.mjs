@@ -23,6 +23,28 @@ function makeResult(overrides = {}) {
   };
 }
 
+function makeReceipt(overrides = {}) {
+  return {
+    kind: "pi-subagent-receipt",
+    protocolVersion: 1,
+    receiptId: "receipt-1",
+    rootRunId: "root-1",
+    runId: "run-1",
+    parentRunId: "parent-1",
+    taskId: "task-1",
+    role: "worker",
+    name: "oracle",
+    submittedAtMs: 1,
+    status: "completed",
+    summary: "Done.",
+    changedFiles: [],
+    checks: [],
+    artifacts: [],
+    unresolved: [],
+    ...overrides,
+  };
+}
+
 test("normalizeCompletedResult keeps intermediate assistant output as a failure without agent_end", () => {
   const result = makeResult({
     exitCode: 1,
@@ -49,11 +71,13 @@ test("normalizeCompletedResult keeps intermediate assistant output as a failure 
 
 test("normalizeCompletedResult treats agent_end with final assistant output as semantic success", () => {
   const result = makeResult({
-    exitCode: 1,
+    exitCode: 0,
     stopReason: "error",
     errorMessage: "Command exited with code 1",
     stderr: "Command exited with code 1",
+    pendingToolError: "Command exited with code 1",
     sawAgentEnd: true,
+    sawAgentSettled: true,
     messages: [
       {
         role: "assistant",
@@ -72,29 +96,22 @@ test("normalizeCompletedResult treats agent_end with final assistant output as s
   assert.equal(isResultError(result), false);
 });
 
-test("normalizeCompletedResult preserves semantic completion when the process is aborted after agent_end", () => {
+test("normalizeCompletedResult keeps cancellation authoritative after a submitted receipt", () => {
   const result = makeResult({
     exitCode: 130,
     stopReason: "aborted",
     errorMessage: "Subagent was aborted.",
     stderr: "Subagent was aborted.",
-    sawAgentEnd: true,
-    messages: [
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "Done." }],
-        timestamp: 1,
-      },
-    ],
+    receiptRequired: true,
+    receipt: makeReceipt(),
   });
 
   normalizeCompletedResult(result, true);
 
-  assert.equal(result.exitCode, 0);
-  assert.equal(result.stopReason, undefined);
-  assert.equal(result.errorMessage, undefined);
-  assert.equal(isResultSuccess(result), true);
-  assert.equal(isResultError(result), false);
+  assert.equal(result.exitCode, 130);
+  assert.equal(result.stopReason, "aborted");
+  assert.equal(isResultSuccess(result), false);
+  assert.equal(isResultError(result), true);
 });
 
 test("normalizeCompletedResult keeps aborts as errors without semantic completion", () => {
@@ -141,7 +158,8 @@ test("normalizeCompletedResult handles timeout", () => {
 test("normalizeCompletedResult handles max turns exceeded", () => {
   const result = makeResult({
     exitCode: 1,
-    maxTurns: 50,
+    maxTurnsLimit: 50,
+    maxTurnsExceeded: true,
     stopReason: "max_turns",
     errorMessage: "Sub-agent exceeded maximum turns (50)",
     stderr: "Sub-agent exceeded maximum turns (50)",
@@ -171,11 +189,87 @@ test("isResultSuccess returns false for timeout even with semantic completion", 
 test("isResultSuccess returns false for max_turns even with semantic completion", () => {
   const result = makeResult({
     exitCode: 1,
-    maxTurns: 50,
+    maxTurnsLimit: 50,
+    maxTurnsExceeded: true,
     stopReason: "max_turns",
     sawAgentEnd: true,
     messages: [{ role: "assistant", content: [{ type: "text", text: "Done" }] }],
   });
 
   assert.equal(isResultSuccess(result), false);
+});
+
+test("a required missing receipt is a protocol failure", () => {
+  const result = makeResult({
+    exitCode: 0,
+    sawAgentEnd: true,
+    receiptRequired: true,
+    messages: [{ role: "assistant", content: [{ type: "text", text: "Done" }] }],
+  });
+
+  normalizeCompletedResult(result, false);
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.stopReason, "missing_receipt");
+  assert.equal(isResultError(result), true);
+});
+
+test("a partial structured receipt remains visible as a failed task", () => {
+  const result = makeResult({
+    exitCode: 0,
+    receiptRequired: true,
+    sawAgentSettled: true,
+    receipt: makeReceipt({ status: "partial", summary: "Implementation done; integration test failed." }),
+  });
+
+  normalizeCompletedResult(result, false);
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.stopReason, "receipt_partial");
+  assert.equal(result.errorMessage, "Implementation done; integration test failed.");
+});
+
+test("a completed receipt requires agent_settled", () => {
+  const result = makeResult({
+    exitCode: 0,
+    receiptRequired: true,
+    receipt: makeReceipt(),
+  });
+
+  normalizeCompletedResult(result, false);
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.stopReason, "protocol_error");
+  assert.match(result.errorMessage, /before agent_settled/);
+});
+
+test("a nonzero process exit remains failed despite a completed receipt", () => {
+  const result = makeResult({
+    exitCode: 1,
+    receiptRequired: true,
+    sawAgentSettled: true,
+    receipt: makeReceipt(),
+  });
+
+  normalizeCompletedResult(result, false);
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.stopReason, "error");
+  assert.equal(isResultSuccess(result), false);
+});
+
+test("a completed receipt cannot override failed evidence", () => {
+  const result = makeResult({
+    exitCode: 0,
+    receiptRequired: true,
+    sawAgentSettled: true,
+    receipt: makeReceipt({
+      checks: [{ id: "unit", status: "failed", exitCode: 1, source: "agent-reported" }],
+    }),
+  });
+
+  normalizeCompletedResult(result, false);
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.stopReason, "protocol_error");
 });
