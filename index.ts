@@ -292,7 +292,7 @@ function createContainedBash(
 	fs.accessSync(BASH_GUARDIAN_PATH, fs.constants.R_OK);
 	const settings = SettingsManager.create(cwd);
 	const baseOperations = createLocalBashOperations({ shellPath: settings.getShellPath() });
-	const shell = getShellConfig(settings.getShellPath());
+	const shell = process.platform === "win32" ? null : getShellConfig(settings.getShellPath());
 	const guardians = new Set<GuardianHandle>();
 	let containmentFailure: string | null = null;
 
@@ -336,6 +336,7 @@ function createContainedBash(
 	const operations: BashOperations = {
 		async exec(command, commandCwd, options) {
 			if (process.platform === "win32") return baseOperations.exec(command, commandCwd, options);
+			if (!shell) throw new Error("Could not resolve the configured POSIX shell.");
 			if (options.signal?.aborted) throw new Error("aborted");
 			const timeoutMs = resolveBashTimeoutMs(options.timeout);
 			const proc = spawn(
