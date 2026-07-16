@@ -83,7 +83,7 @@ function getTextContent(content) {
     .trim();
 }
 
-function compactOversizedAssistantMessage(message) {
+function compactOversizedMessage(message) {
   const text = getTextContent(message.content);
   if (!text) return null;
   const markerBytes = Buffer.byteLength(TRUNCATION_MARKER, "utf8");
@@ -91,21 +91,43 @@ function compactOversizedAssistantMessage(message) {
     Buffer.byteLength(text, "utf8") > MAX_CAPTURED_MESSAGE_BYTES - markerBytes - 1024
       ? `${truncateUtf8(text, MAX_CAPTURED_MESSAGE_BYTES - markerBytes - 1024)}${TRUNCATION_MARKER}`
       : text;
+  if (message.role === "assistant") {
+    return {
+      role: "assistant",
+      content: [{ type: "text", text: compactText }],
+      model: message.model,
+      stopReason: message.stopReason,
+      errorMessage: message.errorMessage,
+      timestamp: message.timestamp,
+      usage: message.usage,
+    };
+  }
   return {
-    role: "assistant",
+    role: "toolResult",
+    toolCallId: message.toolCallId,
+    toolName: message.toolName,
     content: [{ type: "text", text: compactText }],
-    model: message.model,
-    stopReason: message.stopReason,
-    errorMessage: message.errorMessage,
+    isError: Boolean(message.isError),
     timestamp: message.timestamp,
-    usage: message.usage,
   };
 }
 
-function addAssistantMessage(result, message) {
-  if (!message || message.role !== "assistant") return false;
-  updateAssistantMetadata(result, message);
-  rememberSubmitResultToolCalls(result, message);
+function removeActiveToolExecution(result, toolCallId) {
+  if (!Array.isArray(result.activeToolExecutions)) return false;
+  const previousLength = result.activeToolExecutions.length;
+  result.activeToolExecutions = result.activeToolExecutions.filter((item) => item.toolCallId !== toolCallId);
+  return result.activeToolExecutions.length !== previousLength;
+}
+
+function addCapturedMessage(result, message) {
+  if (!message || (message.role !== "assistant" && message.role !== "toolResult")) return false;
+  if (message.role === "assistant") {
+    updateAssistantMetadata(result, message);
+    rememberSubmitResultToolCalls(result, message);
+  }
+  const activeChanged = message.role === "toolResult"
+    ? removeActiveToolExecution(result, message.toolCallId)
+    : false;
 
   let capturedMessage = message;
   let serialized = serializeMessage(capturedMessage);
@@ -118,19 +140,19 @@ function addAssistantMessage(result, message) {
   }
   if (serialized.bytes > MAX_CAPTURED_MESSAGE_BYTES) {
     result.captureTruncated = true;
-    capturedMessage = compactOversizedAssistantMessage(message);
-    if (!capturedMessage) return false;
+    capturedMessage = compactOversizedMessage(message);
+    if (!capturedMessage) return activeChanged;
     serialized = serializeMessage(capturedMessage);
     if (serialized.error) {
       result.processError = true;
       result.stopReason = "error";
       result.errorMessage = `Could not safely capture a subagent message: ${serialized.error}`;
-      return false;
+      return activeChanged;
     }
   }
 
   const seen = getSeenMessageSignatures(result);
-  if (seen.has(serialized.signature)) return false;
+  if (seen.has(serialized.signature)) return activeChanged;
   const capture = getCapturedMessageState(result);
   while (
     result.messages.length > 0 &&
@@ -142,7 +164,7 @@ function addAssistantMessage(result, message) {
   }
   if (serialized.bytes > MAX_CAPTURED_MESSAGE_BYTES) {
     result.captureTruncated = true;
-    return false;
+    return activeChanged;
   }
 
   rememberSignature(seen, serialized.signature);
@@ -150,26 +172,48 @@ function addAssistantMessage(result, message) {
   capture.sizes.push(serialized.bytes);
   capture.totalBytes += serialized.bytes;
 
-  result.usage.turns++;
-  const usage = message.usage;
-  if (usage) {
-    result.usage.input += usage.input || 0;
-    result.usage.output += usage.output || 0;
-    result.usage.cacheRead += usage.cacheRead || 0;
-    result.usage.cacheWrite += usage.cacheWrite || 0;
-    result.usage.cost += usage.cost?.total || 0;
-    result.usage.contextTokens = usage.totalTokens || 0;
+  if (message.role === "assistant") {
+    result.usage.turns++;
+    const usage = message.usage;
+    if (usage) {
+      result.usage.input += usage.input || 0;
+      result.usage.output += usage.output || 0;
+      result.usage.cacheRead += usage.cacheRead || 0;
+      result.usage.cacheWrite += usage.cacheWrite || 0;
+      result.usage.cost += usage.cost?.total || 0;
+      result.usage.contextTokens = usage.totalTokens || 0;
+    }
   }
   return true;
 }
 
-function addAssistantMessages(result, messages) {
+function addCapturedMessages(result, messages) {
   if (!Array.isArray(messages)) return false;
   let changed = false;
   for (const message of messages) {
-    if (addAssistantMessage(result, message)) changed = true;
+    if (addCapturedMessage(result, message)) changed = true;
   }
   return changed;
+}
+
+function updateActiveToolExecution(result, event, complete) {
+  if (typeof event?.toolCallId !== "string" || typeof event?.toolName !== "string") return false;
+  const items = Array.isArray(result.activeToolExecutions) ? result.activeToolExecutions : [];
+  const index = items.findIndex((item) => item.toolCallId === event.toolCallId);
+  const previous = index >= 0 ? items[index] : undefined;
+  const next = {
+    toolCallId: event.toolCallId,
+    toolName: event.toolName,
+    args: event.args ?? previous?.args ?? {},
+    partialResult: event.partialResult ?? previous?.partialResult,
+    result: event.result ?? previous?.result,
+    isError: event.isError ?? previous?.isError,
+    complete,
+  };
+  if (index >= 0) items[index] = next;
+  else items.push(next);
+  result.activeToolExecutions = items;
+  return true;
 }
 
 function addToolError(result, event) {
@@ -209,20 +253,28 @@ export function processPiEvent(event, result) {
       return false;
     case "message_end":
       if (event.message?.role === "assistant") result.pendingToolError = undefined;
-      return addAssistantMessage(result, event.message);
+      return addCapturedMessage(result, event.message);
     case "turn_end":
       if (event.message?.role === "assistant") result.pendingToolError = undefined;
-      return addAssistantMessage(result, event.message);
+      {
+        const messageChanged = addCapturedMessage(result, event.message);
+        const toolsChanged = addCapturedMessages(result, event.toolResults);
+        return messageChanged || toolsChanged;
+      }
     case "agent_end":
       result.sawAgentEnd = true;
-      return addAssistantMessages(result, event.messages);
+      return addCapturedMessages(result, event.messages);
     case "agent_settled":
       result.sawAgentSettled = true;
       return false;
+    case "tool_execution_start":
+      return updateActiveToolExecution(result, event, false);
+    case "tool_execution_update":
+      return updateActiveToolExecution(result, event, false);
     case "tool_execution_end":
       addToolError(result, event);
       captureSubmittedReceipt(result, event);
-      return false;
+      return updateActiveToolExecution(result, event, true);
     default:
       return false;
   }

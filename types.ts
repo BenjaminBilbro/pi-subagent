@@ -14,6 +14,16 @@ export interface UsageStats {
 	turns: number;
 }
 
+export interface ActiveToolExecution {
+	toolCallId: string;
+	toolName: string;
+	args: Record<string, unknown>;
+	partialResult?: { content?: unknown[]; details?: unknown };
+	result?: { content?: unknown[]; details?: unknown };
+	isError?: boolean;
+	complete: boolean;
+}
+
 export interface SingleResult {
 	agent: string;
 	task: string;
@@ -45,6 +55,8 @@ export interface SingleResult {
 	ledgerPath?: string;
 	startedAtMs?: number;
 	finishedAtMs?: number;
+	/** Transient headless-Pi tool state used to render a nested child while it is running. */
+	activeToolExecutions?: ActiveToolExecution[];
 }
 
 export interface SubagentDetails {
@@ -53,7 +65,16 @@ export interface SubagentDetails {
 
 export type DisplayItem =
 	| { type: "text"; text: string }
-	| { type: "toolCall"; name: string; args: Record<string, unknown> };
+	| { type: "thinking"; thinking: string; redacted?: boolean }
+	| { type: "toolCall"; id: string; name: string; args: Record<string, unknown> }
+	| {
+			type: "toolResult";
+			toolCallId: string;
+			name: string;
+			content: Array<{ type: string; text?: string; mimeType?: string }>;
+			details?: unknown;
+			isError: boolean;
+	  };
 
 export function emptyUsage(): UsageStats {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
@@ -110,7 +131,7 @@ function truncateText(value: string | undefined, maximumChars: number): string |
 	return `${value.slice(0, maximumChars)}\n[truncated]`;
 }
 
-/** Keep persisted parent tool details small; the ledger retains the full receipt. */
+/** Keep receipts bounded while retaining the already-bounded UI transcript in tool details. */
 export function compactResultForSession(result: SingleResult): SingleResult {
 	const receipt = result.receipt
 		? {
@@ -132,10 +153,13 @@ export function compactResultForSession(result: SingleResult): SingleResult {
 	return {
 		agent: result.agent,
 		task: truncateText(result.task, 4_000) ?? "",
+		taskSpec: result.taskSpec,
 		frame: result.frame,
 		exitCode: result.exitCode,
 		exitSignal: result.exitSignal,
-		messages: [],
+		// Message details are not included in the provider-facing tool result. Keeping
+		// this bounded transcript makes completed and nested runs inspectable in Pi.
+		messages: result.messages,
 		stderr: truncateText(result.stderr, 8_000) ?? "",
 		stderrTruncated: result.stderrTruncated || result.stderr.length > 8_000,
 		usage: result.usage,
@@ -262,13 +286,25 @@ export function getFinalOutput(messages: Message[]): string {
 export function getDisplayItems(messages: Message[]): DisplayItem[] {
 	const items: DisplayItem[] = [];
 	for (const message of messages) {
-		if (message.role !== "assistant") continue;
-		for (const part of message.content) {
-			if (part.type === "text") {
-				items.push({ type: "text", text: part.text });
-			} else if (part.type === "toolCall") {
-				items.push({ type: "toolCall", name: part.name, args: part.arguments });
+		if (message.role === "assistant") {
+			for (const part of message.content) {
+				if (part.type === "text") {
+					items.push({ type: "text", text: part.text });
+				} else if (part.type === "thinking") {
+					items.push({ type: "thinking", thinking: part.thinking, redacted: part.redacted });
+				} else if (part.type === "toolCall") {
+					items.push({ type: "toolCall", id: part.id, name: part.name, args: part.arguments });
+				}
 			}
+		} else if (message.role === "toolResult") {
+			items.push({
+				type: "toolResult",
+				toolCallId: message.toolCallId,
+				name: message.toolName,
+				content: message.content,
+				details: message.details,
+				isError: message.isError,
+			});
 		}
 	}
 	return items;

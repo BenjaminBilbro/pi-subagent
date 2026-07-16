@@ -778,7 +778,10 @@ export default function (pi: ExtensionAPI) {
 			}
 		},
 
-		renderCall: (args, theme) => renderCall(args, theme),
+		renderCall: (args, theme, context) => renderCall(args, context.expanded, theme, {
+			depth: frame.depth + 1,
+			role: frame.depth + 1 >= frame.maxDepth ? "worker" : "manager",
+		}),
 		renderResult: (result, { expanded }, theme) => renderResult(result, expanded, theme),
 	});
 

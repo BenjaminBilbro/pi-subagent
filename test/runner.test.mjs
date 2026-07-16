@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isResultError, isResultSuccess, normalizeCompletedResult } from "../types.ts";
+import { compactResultForSession, isResultError, isResultSuccess, normalizeCompletedResult } from "../types.ts";
 
 function makeResult(overrides = {}) {
   return {
@@ -272,4 +272,48 @@ test("a completed receipt cannot override failed evidence", () => {
 
   assert.equal(result.exitCode, 1);
   assert.equal(result.stopReason, "protocol_error");
+});
+
+test("session details retain the bounded UI transcript but omit transient tool state", () => {
+  const messages = [
+    {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "inspect first" }],
+      timestamp: 1,
+    },
+    {
+      role: "toolResult",
+      toolCallId: "read-1",
+      toolName: "read",
+      content: [{ type: "text", text: "full result" }],
+      details: { lineCount: 1 },
+      isError: false,
+      timestamp: 2,
+    },
+  ];
+  const result = makeResult({
+    messages,
+    taskSpec: {
+      kind: "pi-subagent-task",
+      protocolVersion: 1,
+      taskId: "task-1",
+      name: "oracle",
+      objective: "repro",
+      scope: ["src"],
+      nonGoals: [],
+      acceptance: [],
+      verification: [],
+    },
+    activeToolExecutions: [{
+      toolCallId: "bash-1",
+      toolName: "bash",
+      args: { command: "sleep 1" },
+      complete: false,
+    }],
+  });
+
+  const stored = compactResultForSession(result);
+  assert.equal(stored.messages, messages);
+  assert.equal(stored.taskSpec.scope[0], "src");
+  assert.equal(stored.activeToolExecutions, undefined);
 });

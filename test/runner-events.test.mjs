@@ -146,3 +146,51 @@ test("terminal lifecycle events are still processed at the configured turn limit
   assert.equal(result.sawAgentSettled, true);
   assert.equal(result.stopReason, undefined);
 });
+
+test("captures tool results and preserves nested subagent details", () => {
+  const result = makeResult();
+  const nested = {
+    agent: "worker-1",
+    task: "Inspect the implementation",
+    exitCode: 0,
+    messages: [{ role: "assistant", content: [{ type: "thinking", thinking: "worker reasoning" }] }],
+    stderr: "",
+    usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 3, turns: 1 },
+  };
+
+  processPiEvent({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "spawn-1", name: "subagent", arguments: { name: "worker-1" } }],
+      usage: { input: 1, output: 2, totalTokens: 3, cost: { total: 0 } },
+    },
+  }, result);
+  processPiEvent({
+    type: "tool_execution_update",
+    toolCallId: "spawn-1",
+    toolName: "subagent",
+    args: { name: "worker-1" },
+    partialResult: { content: [{ type: "text", text: "running" }], details: { results: [nested] } },
+  }, result);
+
+  assert.equal(result.activeToolExecutions.length, 1);
+  assert.equal(result.activeToolExecutions[0].partialResult.details.results[0].agent, "worker-1");
+
+  processPiEvent({
+    type: "message_end",
+    message: {
+      role: "toolResult",
+      toolCallId: "spawn-1",
+      toolName: "subagent",
+      content: [{ type: "text", text: "PI_SUBAGENT_RECEIPT_V1\n{\"status\":\"completed\"}" }],
+      details: { results: [nested] },
+      isError: false,
+    },
+  }, result);
+
+  assert.deepEqual(result.messages.map((message) => message.role), ["assistant", "toolResult"]);
+  assert.equal(result.messages[1].details.results[0].messages[0].content[0].thinking, "worker reasoning");
+  assert.equal(result.activeToolExecutions.length, 0);
+  assert.equal(result.usage.turns, 1, "tool results must not count as model turns");
+});

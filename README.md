@@ -140,6 +140,20 @@ Receipt checks are explicitly recorded as `agent-reported`. A later worker or ma
 
 On current Pi, `submit_result` uses `terminate: true` to avoid an extra model turn. The parent requires Pi's successful, tool-call-correlated `submit_result` event and cross-checks it against an exclusive recovery file (mode 0600 on POSIX); a child-created file alone is not authoritative. The parent never depends on parsing free-form assistant text.
 
+## TUI trace inspection
+
+The default view stays compact. Press Ctrl+O on a `subagent` tool entry to inspect the complete serial run:
+
+- the full task contract, including scope, non-goals, acceptance criteria, verification, timeout, and turn budget
+- reasoning blocks and assistant text in their original order
+- complete tool arguments and tool-result text
+- recursively nested manager and worker traces
+- structured receipts, reported checks, usage, duration, and failure state
+
+Manager and worker headers use different depth colors, and nested traces remain visible after the disposable child process exits. While a manager is running a worker, Pi's partial tool state is also forwarded so expanded mode can show that worker live.
+
+Pi stores this bounded diagnostic transcript in the tool result's UI-only `details`; the provider-facing result remains the compact receipt. It therefore increases session-file and renderer memory use, but does not add the trace to the model prompt or grow the KV cache. If the capture limit is reached, expanded mode marks that earlier trace entries were omitted.
+
 ## Context lifecycle
 
 For a manager with two workers, the provider sees this serial shape:
@@ -222,7 +236,7 @@ npm test       # unit and subprocess integration tests
 npm run check  # strict TypeScript check against current Pi APIs
 ```
 
-The tests cover valid and forged receipts, strict settlement and exit rules, current Pi CLI inheritance, task/receipt bounds, cache-prefix failures, max-turn termination, crash cleanup, nested timeout cleanup, Pi's real extension-load/session-start order, provider-identical Bash replacement, and guardian cleanup after completion, timeout, abort, concurrency, and child `SIGKILL`.
+The tests cover valid and forged receipts, strict settlement and exit rules, current Pi CLI inheritance, task/receipt bounds, cache-prefix failures, max-turn termination, nested trace rendering, crash cleanup, nested timeout cleanup, Pi's real extension-load/session-start order, provider-identical Bash replacement, and guardian cleanup after completion, timeout, abort, concurrency, and child `SIGKILL`.
 
 See [docs/protocol.md](docs/protocol.md) for the frame, task, receipt, and process-lifecycle protocol.
 
@@ -235,7 +249,7 @@ protocol.ts       Frames, task envelopes, receipts, ledger, process registry
 runner.ts         Pi subprocess lifecycle and bounded event transport
 runner-cli.js     Stable parent CLI/resource inheritance
 runner-events.js  Pi JSON event parsing and bounded message capture
-render.ts         TUI rendering
+render.ts         Depth-aware task, reasoning, tool I/O, and nested trace rendering
 types.ts          Result state and semantic normalization
 ```
 
