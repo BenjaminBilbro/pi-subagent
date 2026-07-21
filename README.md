@@ -48,6 +48,18 @@ npm run check
 pi -e .
 ```
 
+## Bundled orchestration skill
+
+The package includes the `orchestrate-subagent-stack` skill, which teaches the active model how to divide work between the main agent, compact managers, and disposable workers; construct explicit task contracts; validate prior slices early; and submit truthful bounded receipts. It includes separate patterns for software work and high-volume web research, where discovery results, scraped pages, and retrieval retries stay inside disposable workers while compact source evidence survives in artifacts.
+
+Pi can load it automatically when a task calls for nested delegation, or you can invoke it explicitly:
+
+```text
+/skill:orchestrate-subagent-stack Refactor the authentication subsystem and verify the combined result.
+```
+
+The skill is inherited by child sessions as part of the unchanged parent prefix, so managers and workers should not reload it.
+
 ## The three tools
 
 All three protocol tools are registered at extension load time at every depth, in the same order, with static schemas. Role differences are enforced at execution time so terminal workers do not receive a different provider prefix. On POSIX, a child-only replacement for Pi's built-in Bash execution backend is installed later during `session_start`, after Pi binds runtime actions; its provider-visible definition and active-tool position remain identical.
@@ -251,6 +263,7 @@ runner-cli.js     Stable parent CLI/resource inheritance
 runner-events.js  Pi JSON event parsing and bounded message capture
 render.ts         Depth-aware task, reasoning, tool I/O, and nested trace rendering
 types.ts          Result state and semantic normalization
+skills/           Bundled orchestration skill and on-demand task/research patterns
 ```
 
 ## Attribution

@@ -203,11 +203,11 @@ The protocol bounds:
 - names, task IDs, objectives, and task-contract arrays;
 - receipt summaries, arrays, evidence, and total receipt bytes;
 - individual JSON event lines;
-- retained assistant messages and deduplication signatures;
+- retained assistant/tool-result messages and deduplication signatures;
 - stderr and model-facing fallback text;
 - the process registry.
 
-Completed parent tool details discard raw child messages and retain only compact receipt, status, timing, and usage data. This avoids copying prior worker transcripts into every later session snapshot. The full structured receipt remains in the temporary audit ledger.
+The provider-facing parent result retains only the compact receipt. Separately, bounded assistant and tool-result messages are retained in the tool result's UI-only `details` so Pi can render reasoning, tool I/O, and nested traces after a child exits. Provider adapters do not send these diagnostic details to the model, so they do not grow the KV context, although they do increase session-file and renderer memory use. The full structured receipt also remains in the temporary audit ledger.
 
 Full artifacts should be written to project or temporary files and referenced by path.
 

@@ -36,6 +36,7 @@ pi -e .
 - `runner-events.js` — bounded Pi JSON event parsing
 - `render.ts` — TUI rendering for tool calls/results
 - `types.ts` — shared types/helpers
+- `skills/orchestrate-subagent-stack/` — bundled model playbook for software and web-research delegation
 - `README.md` — user-facing docs
 
 ## Commit format (important)

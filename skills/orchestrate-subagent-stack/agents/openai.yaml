@@ -1,0 +1,4 @@
+interface:
+  display_name: "Orchestrate Subagent Stack"
+  short_description: "Run focused serial manager-worker delegations"
+  default_prompt: "Use $orchestrate-subagent-stack to decompose and execute this task with focused, verified serial subagents."
