@@ -31,6 +31,7 @@ function makeChild(parent, overrides = {}) {
   return createChildFrame(parent, {
     name: overrides.name ?? "auth-manager",
     taskId: overrides.taskId ?? "auth-refactor",
+    role: overrides.role,
     deadlineAtMs: overrides.deadlineAtMs ?? Date.now() + 60_000,
     maxTurns: overrides.maxTurns ?? 20,
     ledgerPath: overrides.ledgerPath ?? "/tmp/test-ledger.jsonl",
@@ -70,6 +71,34 @@ test("root to manager to worker succeeds and worker delegation is blocked", () =
   assert.throws(
     () => makeChild(worker, { name: "too-deep", taskId: "too-deep" }),
     /may not delegate/,
+  );
+});
+
+test("root can spawn a terminal depth-1 worker", () => {
+  const root = loadFrame({}).frame;
+  const worker = makeChild(root, {
+    name: "web-search-worker",
+    taskId: "web-search",
+    role: "worker",
+  });
+
+  assert.equal(worker.role, "worker");
+  assert.equal(worker.depth, 1);
+  assert.equal(worker.maxDepth, 1);
+  assert.equal(mayDelegate(worker), false);
+  assert.equal(loadFrame({ [FRAME_ENV]: JSON.stringify(worker) }).configurationError, undefined);
+  assert.throws(
+    () => makeChild(worker, { name: "too-deep", taskId: "too-deep" }),
+    /may not delegate/,
+  );
+});
+
+test("only root may explicitly request a direct worker", () => {
+  const manager = makeChild(loadFrame({}).frame);
+
+  assert.throws(
+    () => makeChild(manager, { name: "nested-worker", taskId: "nested-worker", role: "worker" }),
+    /Only the main agent/,
   );
 });
 

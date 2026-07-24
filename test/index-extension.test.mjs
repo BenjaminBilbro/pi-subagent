@@ -256,6 +256,7 @@ test("registers an identical static protocol tool surface at every depth", async
     childPi.tools.map((tool) => JSON.stringify(tool.parameters)),
   );
   assert.ok(mainPi.tools.every((tool) => tool.executionMode === "sequential"));
+  assert.equal(mainPi.tools[0].parameters.properties.role.const, "worker");
   assert.doesNotMatch(JSON.stringify(mainPi.tools[0].parameters), /requireReceipt/);
 });
 

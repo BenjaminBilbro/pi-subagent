@@ -2,10 +2,11 @@
 
 Serial, disposable subagents for Pi that preserve the parent transcript prefix.
 
-This extension is aimed at a single locally hosted model where parallel inference or multiple independent KV caches would be too expensive. It lets a main agent delegate to a compact manager, and lets that manager delegate focused workers one at a time:
+This extension is aimed at a single locally hosted model where parallel inference or multiple independent KV caches would be too expensive. It lets a main agent delegate directly to a one-off worker, or delegate to a compact manager that launches focused workers one at a time:
 
 ```text
 main
+  ├─ worker: one-off search or scrape
   └─ manager
        ├─ worker: scout
        ├─ worker: implementation slice 1
@@ -95,9 +96,21 @@ subagent({
 
 The manager can then call the same tool to create workers. Managers should stay small: use a disposable scout for broad repository exploration, then retain only its compact receipt.
 
+For a one-off task that does not need another delegation layer, the main agent can create a terminal depth-1 worker:
+
+```typescript
+subagent({
+  name: "docs-search-worker",
+  role: "worker",
+  task: "Search the documentation and return the relevant source-backed findings.",
+  acceptance: ["The receipt includes the relevant URLs and concise findings."]
+})
+```
+
 Important behavior:
 
 - Execution is sequential. The extension rejects another direct child while one is active.
+- `role: "worker"` is accepted only from the main agent. The resulting depth-1 worker cannot create subagents.
 - `subagent` must be the only tool call in its assistant message. Failure to verify that invariant rejects delegation.
 - Reusing a name or explicit task ID already in the active ancestry is rejected by default.
 - A different `cwd` is rejected. Pi includes working-directory data in its prompt construction, so changing it can invalidate prefix reuse.

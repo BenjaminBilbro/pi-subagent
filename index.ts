@@ -67,7 +67,7 @@ This Pi session can operate as a main agent, manager, or disposable worker. The 
 
 - Call \`agent_status\` at the beginning of an assigned child task, and whenever your role is unclear. Its host-owned result is authoritative.
 - A child task begins with matching \`[PI_SUBAGENT_RUN_FRAME_V1]\` and \`[PI_SUBAGENT_TASK_SPEC_V1]\` blocks in the newest user message.
-- The main agent delegates focused manager tasks.
+- The main agent delegates focused manager tasks, or sets \`role: "worker"\` for a one-off task that needs no further delegation.
 - A manager should stay compact: use sequential workers for scouting, implementation, and verification instead of accumulating raw exploration. Make exactly one \`subagent\` call per assistant message.
 - A worker completes its narrow task and may delegate only when \`agent_status.mayDelegate\` is true.
 - Every manager and worker must finish by calling \`submit_result\` exactly once, as the only tool call in its final assistant message. Report concrete checks and unresolved issues; do not claim independent verification for checks you did not run.
@@ -88,6 +88,9 @@ const SubagentParams = Type.Object({
 		minLength: 1,
 		maxLength: MAX_NAME_CHARS,
 	}),
+	role: Type.Optional(Type.Literal("worker", {
+		description: "Main-only. Spawn this depth-1 child as a terminal worker instead of the default manager.",
+	})),
 	taskId: Type.Optional(Type.String({
 		description: "Stable task identifier. A host-derived identifier is used when omitted.",
 		minLength: 1,
@@ -679,6 +682,7 @@ export default function (pi: ExtensionAPI) {
 		description: [
 			"Delegate one focused task to a serial child Pi process with the complete current session context.",
 			"Depth is host-controlled: main → manager → worker by default.",
+			"The main agent may set role to worker for a terminal depth-1 child.",
 			"This must be the sole tool call in its assistant message. Different working directories are rejected to preserve the provider prefix.",
 		].join("\n"),
 		parameters: SubagentParams,
@@ -733,6 +737,7 @@ export default function (pi: ExtensionAPI) {
 			const childFrame = createChildFrame(parentWithLedger, {
 				name: params.name.trim(),
 				taskId,
+				role: params.role,
 				deadlineAtMs: inheritedDeadline,
 				maxTurns: params.maxTurns ?? DEFAULT_MAX_TURNS,
 				ledgerPath,
@@ -780,7 +785,7 @@ export default function (pi: ExtensionAPI) {
 
 		renderCall: (args, theme, context) => renderCall(args, context.expanded, theme, {
 			depth: frame.depth + 1,
-			role: frame.depth + 1 >= frame.maxDepth ? "worker" : "manager",
+			role: args.role === "worker" || frame.depth + 1 >= frame.maxDepth ? "worker" : "manager",
 		}),
 		renderResult: (result, { expanded }, theme) => renderResult(result, expanded, theme),
 	});

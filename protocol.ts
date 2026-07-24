@@ -123,6 +123,7 @@ export interface TaskReceiptV1 {
 export interface ChildFrameInput {
 	name: string;
 	taskId: string;
+	role?: "worker";
 	deadlineAtMs: number;
 	maxTurns: number;
 	ledgerPath: string;
@@ -482,6 +483,9 @@ export function readActiveProcessPids(
 
 export function createChildFrame(parent: AgentFrameV1, input: ChildFrameInput): AgentFrameV1 {
 	if (!mayDelegate(parent)) throw new Error(`Agent role ${parent.role} at depth ${parent.depth}/${parent.maxDepth} may not delegate.`);
+	if (input.role === "worker" && parent.role !== "main") {
+		throw new Error("Only the main agent may request a direct worker.");
+	}
 	const nameKey = normalizeFrameKey(input.name);
 	const taskKey = normalizeFrameKey(input.taskId);
 	if (!nameKey) throw new Error("Subagent name may not be empty.");
@@ -494,17 +498,18 @@ export function createChildFrame(parent: AgentFrameV1, input: ChildFrameInput): 
 	}
 
 	const depth = parent.depth + 1;
+	const maxDepth = input.role === "worker" ? depth : parent.maxDepth;
 	return {
 		kind: "pi-subagent-frame",
 		protocolVersion: PROTOCOL_VERSION,
 		rootRunId: parent.rootRunId,
 		runId: randomUUID(),
 		parentRunId: parent.runId,
-		role: roleForDepth(depth, parent.maxDepth),
+		role: roleForDepth(depth, maxDepth),
 		name: input.name,
 		taskId: input.taskId,
 		depth,
-		maxDepth: parent.maxDepth,
+		maxDepth,
 		stack: [...parent.stack, input.name],
 		taskStack: [...parent.taskStack, input.taskId],
 		deadlineAtMs: input.deadlineAtMs,

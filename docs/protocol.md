@@ -47,7 +47,7 @@ interface AgentFrameV1 {
 }
 ```
 
-The root has no inherited frame. It creates a main frame at depth zero. Child roles are derived rather than accepted from model input:
+The root has no inherited frame. It creates a main frame at depth zero. Child roles are derived from each frame's depth and branch-local maximum rather than copied directly from model input:
 
 ```text
 depth == 0         → main
@@ -56,6 +56,8 @@ depth == max       → worker
 ```
 
 With the default maximum of two, this is main → manager → worker. Increasing the maximum creates additional manager levels before the terminal worker.
+
+The main agent may request `role: "worker"` in a `subagent` call. The host implements that request by capping the new child branch at depth one, so the existing derivation assigns `worker` and the existing depth guard prevents further delegation. Managers cannot request this override.
 
 Malformed inherited state fails closed as a non-delegating invalid frame. It never falls back to a new main frame.
 
@@ -103,7 +105,7 @@ interface TaskSpecV1 {
 2. Require the current assistant entry to contain exactly this one tool call. If that cannot be verified, fail closed rather than snapshotting unresolved sibling calls.
 3. Lazily create the root ledger.
 4. Derive a child deadline no later than the parent deadline minus a small return margin.
-5. Construct the child frame and task contract.
+5. Construct the child frame and task contract, applying a main-requested terminal-worker branch cap when present.
 6. Serialize `sessionManager.getHeader()` followed by `sessionManager.getBranch()` without rewriting entries.
 7. Hash the provider-relevant inherited messages, full prompt visible to this extension, active tool schemas, model, and thinking level.
 8. Start one Pi child in JSON mode with the snapshot, task message, and expected hash envelope.

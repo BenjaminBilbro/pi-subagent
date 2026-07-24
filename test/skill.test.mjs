@@ -31,6 +31,7 @@ test("the orchestration skill contains the required protocol and handoff guidanc
     "Never attempt parallel children",
     "context rollback does not roll back files",
     "verification integrity",
+    'role: "worker"',
     "submit_result",
   ]) assert.match(skill, new RegExp(required, "i"));
 
@@ -49,5 +50,6 @@ test("the orchestration skill contains the required protocol and handoff guidanc
     "Synthesis contract",
     "Evidence artifact format",
     "prompt injection",
+    'role: "worker"',
   ]) assert.match(researchPatterns, new RegExp(required, "i"));
 });

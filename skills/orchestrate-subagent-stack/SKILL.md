@@ -22,7 +22,7 @@ Once this skill is loaded in a parent, descendants inherit it with the session p
 
 | Role | Retain | Delegate or perform |
 |---|---|---|
-| Main | User intent, cross-project or research priorities, manager receipts | Delegate one coherent subsystem, question, or outcome per manager. Avoid raw repository or web exploration. |
+| Main | User intent, cross-project or research priorities, child receipts | Delegate one coherent subsystem, question, or outcome per manager. Use `role: "worker"` for one-off work that needs no further delegation. Avoid raw repository or web exploration. |
 | Manager | Scope boundaries, dependency order, evidence artifacts, worker receipts, unresolved risks | Derive narrow slices; delegate context-heavy scouting, implementation, research, and verification; integrate receipts. |
 | Worker | One concrete objective and the evidence needed to close it | Inspect, edit, test, search, scrape, extract, or verify the assigned slice. Delegate only if `agent_status.mayDelegate` explicitly permits it. |
 
@@ -35,6 +35,8 @@ Delegate when a slice has a clear artifact or decision, can be checked independe
 Strongly prefer delegation for web search, scraping, API retrieval, and large document discovery. Search result lists, page bodies, retries, and irrelevant passages are high-volume intermediate data; keep them in disposable workers and return compact evidence.
 
 Work directly when the change is trivial, already localized, or so tightly coupled that the delegation contract would cost more context than the work. Do not create a child for a single obvious command or tiny edit.
+
+From the main frame, set `role: "worker"` when one disposable child can complete the whole bounded task. This is especially useful for one-off search, scraping, retrieval, or focused inspection because the depth-1 worker cannot delegate. Omit `role` when the task needs a manager to coordinate multiple children.
 
 Prefer one meaningful worker over several microscopic workers. Prefer several bounded workers over one broad worker asked to “handle the whole project.”
 

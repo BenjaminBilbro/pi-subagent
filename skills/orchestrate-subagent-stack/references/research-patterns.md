@@ -21,13 +21,28 @@ Use the smallest topology that protects the parent context:
 
 | Situation | Suggested serial flow |
 |---|---|
-| One narrow factual lookup | One research worker → manager receipt |
+| One narrow factual lookup | Main → one direct worker receipt |
 | Several related claims | Discovery → focused extraction workers → verifier |
 | Broad comparison or literature survey | Source-class workers → synthesis → citation verifier |
 | Hundreds of records or URLs | Batch manager → item workers → completeness verifier |
 | Continuing monitoring | Time-bounded batch manager → durable state update → next batch |
 
 Do not delegate purely to increase agent count. A worker should absorb meaningful search noise or produce an independently checkable evidence artifact.
+
+For one narrow lookup or scrape, skip the manager layer:
+
+```typescript
+subagent({
+  name: "battery-program-lookup",
+  role: "worker",
+  taskId: "battery-program-current-status",
+  task: "Find the current official program status and return the source URL, update date, eligibility summary, and any uncertainty.",
+  scope: ["Official program and regulator sources"],
+  acceptance: ["The receipt contains a concise, source-backed answer."],
+  timeout: 300,
+  maxTurns: 20
+})
+```
 
 ## Research manager contract
 
