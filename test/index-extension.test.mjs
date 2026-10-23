@@ -15,6 +15,7 @@ import {
   discoverAndLoadExtensions,
 } from "@earendil-works/pi-coding-agent";
 import {
+  CACHE_INVARIANT_ENV,
   CACHE_INVARIANT_ERROR_PATH_ENV,
   FRAME_ENV,
   MAX_TURNS_PATH_ENV,
@@ -24,11 +25,14 @@ import {
   loadFrame,
   readReceipt,
 } from "../protocol.ts";
+import { STRATA_PREFIX_ENV, STRATA_PROVIDER_ENV } from "../strata-prefix.ts";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repositoryDir = path.dirname(testDir);
+const piVersion = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.resolve("@earendil-works/pi-coding-agent")), "utf8")).version;
+const bashContext = { cwd: repositoryDir, sessionManager: SessionManager.inMemory(repositoryDir) };
 
-function createTestableIndexModule() {
+function createTestableIndexModule(options = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-index-module-"));
   const writeStub = (name, source) => {
     const stubPath = path.join(tempDir, name);
@@ -40,7 +44,7 @@ function createTestableIndexModule() {
     "runner-stub.mjs",
     [
       "export const isSameWorkingDirectory=(a,b)=>a===b;",
-      "export async function runAgent(){throw new Error('not used');}",
+      options.runnerSource ?? "export async function runAgent(){throw new Error('not used');}",
       "",
     ].join("\n"),
   );
@@ -60,12 +64,14 @@ function createTestableIndexModule() {
     .replace('from "./runner-events.js"', `from ${eventsStub}`)
     .replace('from "./runner.js"', `from ${runnerStub}`)
     .replace('from "./protocol.js"', `from ${protocolUrl}`)
+    .replace('from "./strata-prefix.js"', `from ${JSON.stringify(pathToFileURL(path.join(repositoryDir, "strata-prefix.ts")).href)}`)
     .replace('from "./types.js"', `from ${typesStub}`);
   const modulePath = path.join(tempDir, "index.testable.ts");
   fs.writeFileSync(modulePath, source);
   fs.copyFileSync(path.join(repositoryDir, "bash-guardian.js"), path.join(tempDir, "bash-guardian.js"));
   return {
     moduleUrl: pathToFileURL(modulePath).href,
+    runnerModuleUrl: JSON.parse(runnerStub),
     cleanup: () => fs.rmSync(tempDir, { recursive: true, force: true }),
   };
 }
@@ -178,7 +184,7 @@ test.before(async () => {
 
 test.after(() => cleanupModule?.());
 
-test("loads through Pi 0.80.6 without calling runtime actions from the extension factory", async () => {
+test(`loads through Pi ${piVersion} without calling runtime actions from the extension factory`, async () => {
   const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-real-loader-"));
   try {
     const loaded = await discoverAndLoadExtensions([path.join(repositoryDir, "index.ts")], repositoryDir, agentDir);
@@ -189,7 +195,7 @@ test("loads through Pi 0.80.6 without calling runtime actions from the extension
   }
 });
 
-test("Pi 0.80.6 session_start installs the child Bash override before provider use", async () => {
+test(`Pi ${piVersion} session_start installs the child Bash override before provider use`, async () => {
   const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-real-session-"));
   const root = loadFrame({}).frame;
   const manager = createChildFrame(root, {
@@ -349,7 +355,7 @@ test("a disposable child contains background jobs created by Pi's built-in bash 
         { command: "(sleep 0.05; printf 'late-stdout'; sleep 0.08; printf 'later-stdout'; printf 'late-stderr' >&2) &" },
         undefined,
         undefined,
-        {},
+        bashContext,
       );
       assert.match(delayedOutput.content[0].text, /late-stdout/);
       assert.match(delayedOutput.content[0].text, /later-stdout/);
@@ -366,7 +372,7 @@ test("a disposable child contains background jobs created by Pi's built-in bash 
         },
         undefined,
         undefined,
-        {},
+        bashContext,
       );
       const [backgroundPid, guardianPid] = fs.readFileSync(markerPath, "utf8").trim().split(/\s+/).map(Number);
       assert.equal(isProcessAlive(backgroundPid), true);
@@ -407,7 +413,7 @@ test("a live guardian pins the process-group identity after a short background j
           "guardian=$PPID",
           `printf '%s %s\\n' "$background" "$guardian" > '${markerPath}'`,
         ].join("\n"),
-      }, undefined, undefined, {});
+      }, undefined, undefined, bashContext);
       const [backgroundPid, guardianPid] = fs.readFileSync(markerPath, "utf8").trim().split(/\s+/).map(Number);
       assert.equal(await waitFor(() => !isProcessAlive(backgroundPid)), true, "short background job did not exit");
       assert.equal(isProcessAlive(guardianPid), true, "group identity was not pinned after the payload exited");
@@ -446,7 +452,7 @@ test("guardian containment cleans timeout, abort, and concurrent Bash invocation
         () => bash.execute("bash-timeout", {
           command: `printf '%s %s\\n' "$$" "$PPID" > '${timeoutMarker}'\nsleep 30`,
           timeout: 0.05,
-        }, undefined, undefined, {}),
+        }, undefined, undefined, bashContext),
         /Command timed out after 0\.05 seconds/,
       );
       const timeoutPids = fs.readFileSync(timeoutMarker, "utf8").trim().split(/\s+/).map(Number);
@@ -456,7 +462,7 @@ test("guardian containment cleans timeout, abort, and concurrent Bash invocation
       const abortController = new AbortController();
       const aborted = bash.execute("bash-abort", {
         command: `printf '%s %s\\n' "$$" "$PPID" > '${abortMarker}'\nsleep 30`,
-      }, abortController.signal, undefined, {});
+      }, abortController.signal, undefined, bashContext);
       assert.equal(await waitFor(() => fs.existsSync(abortMarker)), true);
       abortController.abort();
       await assert.rejects(() => aborted, /Command aborted/);
@@ -466,7 +472,7 @@ test("guardian containment cleans timeout, abort, and concurrent Bash invocation
       const concurrentMarkers = [0, 1].map((index) => path.join(tempRoot, `concurrent-${index}`));
       await Promise.all(concurrentMarkers.map((marker, index) => bash.execute(`bash-concurrent-${index}`, {
         command: `sleep 30 & printf '%s %s\\n' "$!" "$PPID" > '${marker}'`,
-      }, undefined, undefined, {})));
+      }, undefined, undefined, bashContext)));
       const concurrentPids = concurrentMarkers.map((marker) =>
         fs.readFileSync(marker, "utf8").trim().split(/\s+/).map(Number));
       assert.equal(new Set(concurrentPids.map(([, guardianPid]) => guardianPid)).size, 2);
@@ -625,6 +631,132 @@ test("a missing cache invariant aborts a child at turn_start before inference", 
 
     assert.equal(aborted, true);
     assert.match(fs.readFileSync(markerPath, "utf8"), /missing-or-malformed-parent-invariant/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("provider hook and delegation carry one frozen Strata boundary through root, manager, and worker", async () => {
+  const testable = createTestableIndexModule({
+    runnerSource: [
+      "export const calls=[];",
+      "export async function runAgent(options){",
+      "calls.push(options);",
+      "return {agent:options.agentName,exitCode:1,errorMessage:'fixture stop',messages:[],stderr:''};",
+      "}",
+    ].join("\n"),
+  });
+  const model = { provider: "strata-local", id: "qwen", api: "openai-completions", baseUrl: "http://localhost:8080/v1" };
+  const body = {
+    model: model.id,
+    messages: [
+      { role: "system", content: "Stable prompt." },
+      { role: "user", content: "Parent history." },
+    ],
+  };
+  const session = SessionManager.inMemory(repositoryDir);
+  session.appendMessage({ role: "user", content: "Parent history.", timestamp: 1 });
+  const context = { cwd: repositoryDir, model, sessionManager: session };
+  const appendDelegation = (id, name) => session.appendMessage({
+    role: "assistant",
+    content: [{ type: "toolCall", id, name: "subagent", arguments: { name, task: "Test the stack." } }],
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    stopReason: "toolUse",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { total: 0 } },
+    timestamp: 2,
+  });
+  let ledgerPath;
+  try {
+    const localExtension = (await import(testable.moduleUrl)).default;
+    const { calls } = await import(testable.runnerModuleUrl);
+    await withEnvironment({
+      [FRAME_ENV]: undefined,
+      [STRATA_PROVIDER_ENV]: model.provider,
+      [STRATA_PREFIX_ENV]: undefined,
+    }, async () => {
+      const rootPi = createMockPi();
+      localExtension(rootPi);
+      await rootPi.emit("session_start");
+      await rootPi.emit("before_agent_start", { systemPrompt: "base" }, context);
+      assert.deepEqual(await rootPi.emit("before_provider_request", { payload: body }, context), [undefined]);
+      appendDelegation("delegate-root", "manager");
+      await rootPi.tools.find((tool) => tool.name === "subagent").execute(
+        "delegate-root", { name: "manager", task: "Test the stack." }, undefined, undefined, context,
+      );
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].strataPrefix.messages, 2);
+      ledgerPath = calls[0].frame.ledgerPath;
+      await withEnvironment({
+        [FRAME_ENV]: JSON.stringify(calls[0].frame),
+        [CACHE_INVARIANT_ENV]: JSON.stringify(calls[0].cacheInvariant),
+        [STRATA_PREFIX_ENV]: JSON.stringify(calls[0].strataPrefix),
+      }, async () => {
+        const managerPi = createMockPi();
+        localExtension(managerPi);
+        await managerPi.emit("session_start");
+        await managerPi.emit("before_agent_start", { systemPrompt: "base" }, context);
+        const managerBody = {
+          ...body,
+          messages: [...body.messages, { role: "assistant", content: "Delegate." }, { role: "user", content: "Manager task." }],
+        };
+        const [replacement] = await managerPi.emit("before_provider_request", { payload: managerBody }, context);
+        assert.deepEqual(replacement.strata_prefix, { messages: 2 });
+        appendDelegation("delegate-manager", "worker");
+        await managerPi.tools.find((tool) => tool.name === "subagent").execute(
+          "delegate-manager", { name: "worker", task: "Test the stack." }, undefined, undefined, context,
+        );
+        assert.equal(calls.length, 2);
+        assert.deepEqual(calls[1].strataPrefix, calls[0].strataPrefix);
+        assert.equal(calls[1].frame.depth, 2);
+      });
+      const returnedBody = {
+        ...body,
+        messages: [...body.messages, { role: "assistant", content: "Delegate." }, { role: "tool", content: "Receipt." }],
+      };
+      const [returned] = await rootPi.emit("before_provider_request", { payload: returnedBody }, context);
+      assert.deepEqual(returned.strata_prefix, { messages: 2 });
+      await rootPi.emit("session_compact");
+      assert.deepEqual(await rootPi.emit("before_provider_request", { payload: returnedBody }, context), [undefined]);
+    });
+  } finally {
+    if (ledgerPath) fs.rmSync(path.dirname(ledgerPath), { recursive: true, force: true });
+    testable.cleanup();
+  }
+});
+
+test("a child with missing Strata state aborts from the provider hook and writes the runner failure marker", async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-strata-error-"));
+  const root = loadFrame({}).frame;
+  const manager = createChildFrame(root, {
+    name: "manager",
+    taskId: "manager-task",
+    deadlineAtMs: Date.now() + 60_000,
+    maxTurns: 10,
+    ledgerPath: path.join(tempRoot, "ledger.jsonl"),
+  });
+  const marker = path.join(tempRoot, "cache-error");
+  let aborted = false;
+  try {
+    await withEnvironment({
+      [FRAME_ENV]: JSON.stringify(manager),
+      [STRATA_PROVIDER_ENV]: "strata-local",
+      [STRATA_PREFIX_ENV]: undefined,
+      [CACHE_INVARIANT_ERROR_PATH_ENV]: marker,
+    }, async () => {
+      const pi = createMockPi();
+      extension(pi);
+      const results = await pi.emit("before_provider_request", {
+        payload: { messages: [{ role: "user", content: "Child task." }] },
+      }, {
+        model: { provider: "strata-local", id: "qwen", api: "openai-completions", baseUrl: "http://localhost:8080/v1" },
+        abort: () => { aborted = true; },
+      });
+      assert.deepEqual(results, [undefined]);
+      assert.equal(aborted, true);
+      assert.match(fs.readFileSync(marker, "utf8"), /missing its host-owned Strata prefix/);
+    });
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

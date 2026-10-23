@@ -59,4 +59,5 @@ Keep commits focused (one logical change per commit).
 
 - Package name is still inherited as `@mjakl/pi-subagent`; do not publish from this fork unless the maintainer confirms access to that npm scope or deliberately renames it.
 - Minimum Pi API: `@earendil-works/*` 0.80.6
+- Development dependencies target Pi 1.x; validate changes against Pi 1.0+ as well as the compatibility floor when relevant.
 - For doc/code changes on npm, publish a new version (`npm version patch|minor|major`), then publish.

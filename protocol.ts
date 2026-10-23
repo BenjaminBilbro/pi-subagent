@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import type { StrataPrefixV1 } from "./strata-prefix.js";
 
 export const FRAME_ENV = "PI_SUBAGENT_FRAME";
 export const RECEIPT_PATH_ENV = "PI_SUBAGENT_RECEIPT_PATH";
@@ -712,6 +713,7 @@ export function buildChildEnvironment(
 	maxTurnsPath: string,
 	cacheInvariant?: CacheInvariantV1,
 	cacheInvariantErrorPath?: string,
+	strataPrefix?: StrataPrefixV1,
 ): NodeJS.ProcessEnv {
 	return {
 		[FRAME_ENV]: JSON.stringify(frame),
@@ -723,6 +725,7 @@ export function buildChildEnvironment(
 		[PREVENT_CYCLES_ENV]: frame.preventCycles ? "1" : "0",
 		...(cacheInvariant ? { [CACHE_INVARIANT_ENV]: JSON.stringify(cacheInvariant) } : {}),
 		...(cacheInvariantErrorPath ? { [CACHE_INVARIANT_ERROR_PATH_ENV]: cacheInvariantErrorPath } : {}),
+		PI_SUBAGENT_STRATA_PREFIX: strataPrefix ? JSON.stringify(strataPrefix) : "",
 	};
 }
 

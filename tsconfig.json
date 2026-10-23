@@ -12,6 +12,7 @@
   "include": [
     "index.ts",
     "protocol.ts",
+    "strata-prefix.ts",
     "render.ts",
     "runner.ts",
     "types.ts",

@@ -59,6 +59,7 @@ import {
 	type ReceiptStatus,
 } from "./protocol.js";
 import { compactResultForSession, isResultError, isResultSuccess, type SingleResult } from "./types.js";
+import { STRATA_DEBUG_ENV, StrataPrefixController } from "./strata-prefix.js";
 
 const SUBAGENT_INSTRUCTIONS = `
 ## Serial Sub-Agent Extension
@@ -575,6 +576,32 @@ export default function (pi: ExtensionAPI) {
 	let containmentFailureReported = false;
 	const expectedCacheInvariant = parseExpectedCacheInvariant();
 	let containedBash: ReturnType<typeof createContainedBash> | null = null;
+	const strataPrefix = new StrataPrefixController(frame.rootRunId, frame.role !== "main", process.env, (event, detail) => {
+		if (process.env[STRATA_DEBUG_ENV] !== "1") return;
+		process.stderr.write(`${JSON.stringify({
+			component: "pi-subagent-strata",
+			runId: frame.runId,
+			depth: frame.depth,
+			event,
+			...detail,
+		})}\n`);
+	});
+
+	pi.on("before_provider_request", (event, ctx) => {
+		try {
+			return strataPrefix.beforeRequest(event.payload, ctx.model);
+		} catch (error) {
+			const message = `Strata cache-prefix invariant failed: ${error instanceof Error ? error.message : String(error)}`;
+			cacheInvariantFailure = message;
+			writeCacheInvariantError(message);
+			process.stderr.write(`[pi-subagent] ${message}\n`);
+			ctx.abort();
+		}
+	});
+
+	pi.on("session_start", () => strataPrefix.reset());
+	pi.on("session_compact", () => strataPrefix.reset());
+	pi.on("session_tree", () => strataPrefix.reset());
 
 	// Runtime action methods are unavailable while Pi loads extension factories.
 	// session_start runs after the tool registry is bound and before the first
@@ -753,6 +780,7 @@ export default function (pi: ExtensionAPI) {
 			});
 			const snapshot = buildForkSessionSnapshotJsonl(ctx.sessionManager);
 			if (!snapshot) throw new Error("Failed to snapshot the current Pi session context.");
+			const strataPrefixBoundary = strataPrefix.prepareChild(ctx.model);
 
 			activeChild = childFrame;
 			try {
@@ -767,6 +795,7 @@ export default function (pi: ExtensionAPI) {
 					makeDetails: (results) => ({ results }),
 					runtime,
 					cacheInvariant,
+					strataPrefix: strataPrefixBoundary,
 					requireReceipt: true,
 				});
 

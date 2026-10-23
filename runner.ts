@@ -8,6 +8,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { parseInheritedCliArgs } from "./runner-cli.js";
 import { processPiJsonLine } from "./runner-events.js";
+import type { StrataPrefixV1 } from "./strata-prefix.js";
 import {
   appendLedgerRecord,
   appendProcessRegistryRecord,
@@ -60,6 +61,7 @@ export interface RunAgentOptions {
   runtime?: RuntimeSelection;
   requireReceipt?: boolean;
   cacheInvariant?: CacheInvariantV1;
+  strataPrefix?: StrataPrefixV1;
   /** Internal subprocess fixture hook used only by tests. */
   testSpawn?: TestSpawnOverride;
 }
@@ -235,6 +237,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     runtime,
     requireReceipt = true,
     cacheInvariant,
+    strataPrefix,
     testSpawn,
   } = opts;
 
@@ -313,6 +316,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
               files.maxTurnsPath,
               cacheInvariant,
               files.cacheInvariantErrorPath,
+              strataPrefix,
             ),
             [PI_OFFLINE_ENV]: "1",
           },

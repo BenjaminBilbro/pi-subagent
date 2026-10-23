@@ -73,6 +73,7 @@ async function runFixture(fixtureName, options = {}) {
     forkSessionSnapshotJsonl: `${JSON.stringify({ type: "session", version: 3, id: "fixture", timestamp: new Date().toISOString(), cwd: repositoryDir })}\n`,
     makeDetails: (results) => ({ results }),
     requireReceipt: options.requireReceipt ?? true,
+    strataPrefix: options.strataPrefix,
     testSpawn: { command: process.execPath, prefixArgs: [fixturePath] },
   });
   return { ...invocation, result };
@@ -116,6 +117,34 @@ test("a valid structured receipt is required and returned as semantic completion
     assert.equal(ledgerLines.at(-1).receiptId, "fixture-receipt");
   } finally {
     fs.rmSync(invocation.tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runner forwards only the host-selected Strata prefix, shadowing stale process environment", async () => {
+  const previous = process.env.PI_SUBAGENT_STRATA_PREFIX;
+  process.env.PI_SUBAGENT_STRATA_PREFIX = "stale parent state";
+  try {
+    for (const boundary of [undefined, {
+      kind: "pi-subagent-strata-prefix",
+      protocolVersion: 1,
+      rootRunId: "fixture-root",
+      provider: "strata-local",
+      model: "qwen",
+      baseUrl: "http://localhost:8080/v1",
+      messages: 7,
+      sha256: "a".repeat(64),
+    }]) {
+      const invocation = await runFixture("fake-pi-strata-prefix.mjs", { strataPrefix: boundary });
+      try {
+        assert.equal(invocation.result.exitCode, 0);
+        assert.equal(invocation.result.stderr.trim(), `STRATA_PREFIX=${boundary ? JSON.stringify(boundary) : ""}`);
+      } finally {
+        fs.rmSync(invocation.tempRoot, { recursive: true, force: true });
+      }
+    }
+  } finally {
+    if (previous === undefined) delete process.env.PI_SUBAGENT_STRATA_PREFIX;
+    else process.env.PI_SUBAGENT_STRATA_PREFIX = previous;
   }
 });
 

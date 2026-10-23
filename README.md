@@ -207,6 +207,40 @@ The extension forwards Pi's current model, thinking level, and exact active-tool
 
 Pi auto-compaction is cancelled inside disposable child frames because pre-prompt compaction would replace the inherited prefix. If a manager is near its context limit, compact it before delegation rather than relying on a child to compact the fork.
 
+### Optional Strata prefix pinning
+
+When Pi's OpenAI Chat Completions provider points to Strata, enable lightweight conversation-checkpoint pinning with the **exact provider name from your Pi model configuration**:
+
+```bash
+PI_SUBAGENT_STRATA_PROVIDER=llama.cpp \
+PI_SUBAGENT_STRATA_DEBUG=1 \
+pi -e /path/to/pi-subagent
+```
+
+The name `llama.cpp` above is only an example: its configured endpoint must actually be Strata, not vanilla llama.cpp or a cloud provider. Pinning is off by default and never added to other providers. Only the `openai-completions` API and text-only requests are supported.
+
+The host records the number of messages in the last serialized parent request, before the assistant's delegation call. On delegation it freezes that boundary and passes a small count/hash envelope to the child. The child's first and subsequent requests include:
+
+```json
+{"strata_prefix":{"messages":40}}
+```
+
+Here `40` is an example serialized message count, not a token count or checkpoint ID. Strata resolves it to a token boundary and requests that the engine pin its lightweight in-memory checkpoint there. The parent's first continuation requests that same boundary; the next root delegation can select a newer one. This adds no warm-up request and does not save or restore model KV state to disk.
+
+**Nested managers:** main → manager → sequential workers is supported. Every descendant carries the same outermost boundary, rather than replacing it with each worker's newer boundary. Strata currently supports only one explicitly pinned prefix per engine. The main agent's prefix is protected from ordinary retention, but the manager's newer suffix is not independently pinned and may need replay when a worker returns. Guaranteeing a separate checkpoint for every suspended ancestor requires multi-pin support in Strata. Avoid unrelated clients replacing the pin on the same engine.
+
+Strata must support `strata_prefix` and run with `--prompt-cache 3` or greater; `--prompt-cache 32` is a reasonable starting capacity, subject to available memory. Do not send `strata_checkpoint: false`. Periodic `--prompt-cache-every` checkpoints are optional and are not a replacement for a pin. The engine can pin an existing checkpoint at the requested boundary or create one while prefilling across it. If it has already resumed past that boundary and no checkpoint exists exactly there, it cannot pin it retroactively.
+
+`PI_SUBAGENT_STRATA_DEBUG=1` writes JSON lines to stderr, without prompts or tool contents:
+
+```json
+{"component":"pi-subagent-strata","runId":"example","depth":1,"event":"pin_requested","messages":40,"inherited":true}
+```
+
+`boundary_selected` means the host froze a boundary; `pin_requested` means the request field was attached, **not that Strata acknowledged a successful pin**. Check Strata's logs for `pin=... ignored`, `no checkpoint there to pin`, or `its checkpoint was not kept`, and verify actual cached/prefilled-token metrics on your model/template. Engine restarts or incompatible prompt rendering still require recomputation.
+
+The extension fingerprints the serialized prefix, tools, reasoning settings, model, and endpoint. A Strata child aborts on mismatch, missing state, images/audio, disabled checkpointing, or a conflicting existing `strata_prefix`. Main-agent inference remains usable with unsupported requests, but delegation on the selected provider is refused until a supported request has been observed. Session changes/compaction clear pending root boundaries. Keep other payload-mutating extensions deterministic across processes, preferably loading this extension after them: a later hook can still change the outgoing request after these checks.
+
 ## Safety and failure handling
 
 KV/context rollback does not undo filesystem edits, shell commands, network requests, or spawned processes. Those are shared persistent state.
@@ -238,6 +272,8 @@ Root-process environment variables:
 |---|---:|---|
 | `PI_SUBAGENT_MAX_DEPTH` | `2` | Maximum delegation depth, from 0 through 8. |
 | `PI_SUBAGENT_PREVENT_CYCLES` | `1` | Set to `0` to disable active-path name/task-ID cycle checks. |
+| `PI_SUBAGENT_STRATA_PROVIDER` | unset | Opt in to Strata prefix pinning for this exact Pi provider name. Requires a Strata endpoint and `openai-completions`. |
+| `PI_SUBAGENT_STRATA_DEBUG` | unset | Set to `1` for prompt-free JSON pin-selection/request diagnostics on stderr. |
 
 Other `PI_SUBAGENT_*` variables are internal host protocol state and should not be set manually.
 
@@ -261,7 +297,9 @@ npm test       # unit and subprocess integration tests
 npm run check  # strict TypeScript check against current Pi APIs
 ```
 
-The tests cover valid and forged receipts, strict settlement and exit rules, current Pi CLI inheritance, task/receipt bounds, cache-prefix failures, max-turn termination, nested trace rendering, crash cleanup, nested timeout cleanup, Pi's real extension-load/session-start order, provider-identical Bash replacement, and guardian cleanup after completion, timeout, abort, concurrency, and child `SIGKILL`.
+Development dependencies target Pi 1.x. All 85 tests and the TypeScript check pass on Pi 1.0.0 and 1.1.0. These are CPU-only protocol/extension tests, not live GPU cache-reuse validation.
+
+The tests cover valid and forged receipts, strict settlement and exit rules, current Pi CLI inheritance, task/receipt bounds, cache-prefix failures, max-turn termination, nested trace rendering, crash cleanup, nested timeout cleanup, Pi's real extension-load/session-start order, provider-identical Bash replacement, and guardian cleanup after completion, timeout, abort, concurrency, and child `SIGKILL`. Strata tests cover opt-in/provider isolation, frozen boundaries through long child histories and multiple sequential nested workers, parent continuation, changed-prefix rejection, unsupported requests, and subprocess environment propagation.
 
 See [docs/protocol.md](docs/protocol.md) for the frame, task, receipt, and process-lifecycle protocol.
 
@@ -271,6 +309,7 @@ See [docs/protocol.md](docs/protocol.md) for the frame, task, receipt, and proce
 index.ts          Extension hooks and the three static tools
 bash-guardian.js  Live POSIX process-group owner for child Bash commands
 protocol.ts       Frames, task envelopes, receipts, ledger, process registry
+strata-prefix.ts  Opt-in Strata boundary selection, validation, and payload pinning
 runner.ts         Pi subprocess lifecycle and bounded event transport
 runner-cli.js     Stable parent CLI/resource inheritance
 runner-events.js  Pi JSON event parsing and bounded message capture

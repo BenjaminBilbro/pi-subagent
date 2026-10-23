@@ -1,4 +1,4 @@
-import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
+import { SessionManager, createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 
 const markerPath = process.env.PI_SUBAGENT_TEST_MARKER;
 if (!markerPath) throw new Error("PI_SUBAGENT_TEST_MARKER is required");
@@ -47,6 +47,6 @@ const bash = tools.find((tool) => tool.name === "bash");
 if (!bash) throw new Error("contained Bash was not installed");
 await bash.execute("fixture-bash", {
 	command: `sleep 30 & printf '%s %s\\n' "$!" "$PPID" > '${markerPath}'`,
-}, undefined, undefined, {});
+}, undefined, undefined, { cwd: process.cwd(), sessionManager: SessionManager.inMemory(process.cwd()) });
 
 setInterval(() => {}, 1_000);

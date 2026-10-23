@@ -26,6 +26,7 @@ import {
   validateSoleToolCall,
   writeReceipt,
 } from "../protocol.ts";
+import { STRATA_PREFIX_ENV, STRATA_PROVIDER_ENV, StrataPrefixController } from "../strata-prefix.ts";
 
 function makeChild(parent, overrides = {}) {
   return createChildFrame(parent, {
@@ -199,6 +200,18 @@ test("child environment carries one canonical frame plus compatibility mirrors",
   assert.equal(roundTrip.runId, manager.runId);
   assert.equal(env.PI_SUBAGENT_DEPTH, "1");
   assert.equal(env.PI_SUBAGENT_MAX_DEPTH, "2");
+});
+
+test("child environment carries the selected Strata boundary and clears stale inherited state when disabled", () => {
+  const root = loadFrame({}).frame;
+  const manager = makeChild(root);
+  const model = { provider: "strata-local", id: "qwen", api: "openai-completions", baseUrl: "http://localhost:8080/v1" };
+  const controller = new StrataPrefixController(root.rootRunId, false, { [STRATA_PROVIDER_ENV]: model.provider });
+  controller.beforeRequest({ model: "qwen", messages: [{ role: "user", content: "Parent." }] }, model);
+  const boundary = controller.prepareChild(model);
+  const enabled = buildChildEnvironment(manager, "/tmp/receipt", "/tmp/max-turns", undefined, undefined, boundary);
+  assert.deepEqual(JSON.parse(enabled[STRATA_PREFIX_ENV]), boundary);
+  assert.equal(buildChildEnvironment(manager, "/tmp/receipt", "/tmp/max-turns")[STRATA_PREFIX_ENV], "");
 });
 
 test("delegation and submission reject sibling tool calls in one assistant message", () => {

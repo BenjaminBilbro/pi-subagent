@@ -215,11 +215,42 @@ Full artifacts should be written to project or temporary files and referenced by
 
 ## Cache boundary
 
-The extension does not issue llama.cpp KV operations. Its responsibility is to present Pi/llama.cpp with an unchanged prefix and a new suffix. `PI_SUBAGENT_CACHE_INVARIANT` carries SHA-256 hashes for the inherited provider messages, assembled prompt, ordered active tool definitions, model, and thinking level; a child writes a private diagnostic marker and aborts before inference if they differ.
+The extension does not issue llama.cpp KV save/restore operations. Its responsibility is to present Pi/llama.cpp with an unchanged prefix and a new suffix. `PI_SUBAGENT_CACHE_INVARIANT` carries SHA-256 hashes for the inherited provider messages, assembled prompt, ordered active tool definitions, model, and thinking level; a child writes a private diagnostic marker and aborts before inference if they differ.
 
 Those hashes cover Pi state visible to this extension. Another extension that mutates `context` or `before_provider_request` differently by process mode or environment can still change the final provider payload after the check. Keep such extensions deterministic across parent and child and confirm actual llama.cpp cache metrics during benchmarking.
 
 Useful future benchmark metrics include prompt tokens evaluated, cached tokens reused, time to first token, peak KV/RAM/VRAM, and correctness. Cache behavior should be measured separately from protocol correctness.
+
+### Strata pin envelope
+
+`PI_SUBAGENT_STRATA_PROVIDER` explicitly selects the Pi provider whose `openai-completions` requests may receive `strata_prefix`. No other provider is changed.
+
+The `before_provider_request` hook observes the actual serialized message count, not Pi session-entry count. Before spawning a direct child, the root freezes its last request's boundary into `PI_SUBAGENT_STRATA_PREFIX`:
+
+```json
+{
+  "kind": "pi-subagent-strata-prefix",
+  "protocolVersion": 1,
+  "rootRunId": "root-run-id",
+  "provider": "llama.cpp",
+  "model": "qwen",
+  "baseUrl": "http://localhost:8080/v1",
+  "messages": 40,
+  "sha256": "<64 lowercase hexadecimal characters>"
+}
+```
+
+The hash covers the first `messages` serialized messages, model request field, tools/tool selection, and reasoning/template options. It contains no prompt text. The root ignores any inherited envelope from its own launch environment; each child receives only its parent's explicit selection, with absent state clearing any stale process-environment value.
+
+Every child request validates the envelope's run/provider identity, model/endpoint, hash, and a strictly longer text-only message array before attaching `strata_prefix: { messages: K }`. The request body is otherwise unchanged. Missing/malformed state, changed prefixes, images/audio, `strata_checkpoint: false`, and conflicting pin selectors abort a selected-provider child through Pi's abort signal and the existing cache-invariant error marker. Main requests are not rejected, but an unsupported selected-provider request cannot establish a delegation boundary.
+
+A nested manager forwards the inherited envelope unchanged to every sequential worker. It never substitutes its growing request length for `K`. The root's first continuation also requests `K`; later root delegation can move the pin forward. Session starts, successful compaction, and tree navigation clear root candidates/pending resumes.
+
+This deliberately protects **one outermost prefix**, not a stack of independently pinned parents. Strata's single explicit pin would otherwise be moved by a deeper worker, exposing the outer parent's checkpoint to eviction. Manager-specific suffix checkpoints remain subject to normal retention. Other clients sharing the engine can replace this global pin. Omitting `strata_prefix` does not explicitly unpin an existing checkpoint.
+
+This is a pin request on the first child inference, not a separate pre-spawn checkpoint RPC. It needs Strata's lightweight checkpoint cache (`--prompt-cache >= 3`) and enabled per-request checkpointing. HTTP success does not acknowledge the pin: if the engine resumed past `K`'s token boundary without an existing checkpoint exactly there, it logs a warning and cannot create that checkpoint retroactively. Compatible rendering and real engine logs/cache metrics must be checked on the deployed model. This feature neither serializes KV tensors nor adds inference requests.
+
+`PI_SUBAGENT_STRATA_DEBUG=1` emits prompt-free JSON stderr records with component, run ID, depth, event, and boundary count or failure reason. `pin_requested` records payload injection only, not engine acknowledgement.
 
 ## Persistent side effects
 
